@@ -1,0 +1,218 @@
+#!/bin/bash
+
+##############################################################################
+# Quick LR Search: Run N-layer LSTM for 3 iterations to find best LR
+# Use results to pick best LR for each (scale, solver, perturbations, etc.) combo
+##############################################################################
+
+# 1) Kill existing screen sessions
+echo "[INFO] Killing existing screen sessions named '*'..."
+screen -ls | grep '\.' | awk '{print $1}' | xargs -I{} screen -S {} -X quit 2>/dev/null
+
+echo "[INFO] Starting LR search runs (3 iterations each)..."
+
+
+########## CONFIGURE N_LAYERS HERE #############
+n_layers=3
+
+########## RUN PREFIX #############
+RUN_PREFIX="lstm${n_layers}L_lr_search"
+
+
+# Define hyperparameter arrays:
+TASKS=("copy")
+ARCHITECTURES=("LSTM")
+
+MODEL_SCALES=(1 2 4 8)
+# base hidden=111 so scale 64 -> ~1B params
+hidden_size=111
+memory_size=111
+head_size=0
+num_heads=1
+input_dim=128
+
+INPUT_SAMPLE_LENGTHS=(100)
+MICRO_BATCH_SIZES=(1)
+MACRO_BATCH_SIZES=(1)
+
+LEARNING_RATES=(0.1 0.05 0.01 0.005 0.001 0.0005 0.0001)
+EPSILONS=(0.1)
+
+MAX_NUMS=(120)
+WEIGHT_DECAYS=(0)
+GRAD_CLIPS=(0)
+SOLVERS=("1SPSA" "1.5-SPSA")
+
+BETA1s=(0.)
+BETA2s=(0.)
+PROBE_PROCONDITIONINGS=(false)
+
+SANGER_RANKS=(1)
+alpha_eye_scalars=(1.0)
+beta_eigen_sangers=(0)
+
+NUM_PERTURBATIONS=(8 96 512)
+saturating_alphas=(1.0 0.5 0.1)
+
+OVERFITS=(true)
+
+# LR Search configurations (quick runs):
+LOG_INTERVAL=1
+MAX_ITERS=3
+
+TIE_EPS_TO_LR=true
+ADAM=false
+WANDB=false
+
+WANDB_PROJ="Zero_Order_Opt_LSTM_LR_Search_2"
+
+# Function to truncate a long session name (if needed)
+truncate_name() {
+  echo "$1" | cut -c1-65
+}
+
+# --- Detect Available GPUs ---
+echo "[INFO] Detecting available GPUs..."
+GPU_IDS=($(nvidia-smi --query-gpu=index --format=csv,noheader))
+NUM_GPUS=${#GPU_IDS[@]}
+
+if [ "$NUM_GPUS" -eq 0 ]; then
+    echo "[ERROR] No GPUs detected by nvidia-smi. Exiting."
+    exit 1
+fi
+echo "[INFO] Detected ${NUM_GPUS} GPUs with IDs: ${GPU_IDS[@]}"
+
+run_counter=0
+
+# --- Loop over the hyperparameters ---
+for TASK in "${TASKS[@]}"; do
+    for ARCH in "${ARCHITECTURES[@]}"; do
+        for SOLVER in "${SOLVERS[@]}"; do
+            for MODEL_SCALE in "${MODEL_SCALES[@]}"; do
+                for INPUT_SAMPLE_LENGTH in "${INPUT_SAMPLE_LENGTHS[@]}"; do
+                    for MICRO_BS in "${MICRO_BATCH_SIZES[@]}"; do
+                        for MACRO_BS in "${MACRO_BATCH_SIZES[@]}"; do
+                            for LR in "${LEARNING_RATES[@]}"; do
+                                for EPS in "${EPSILONS[@]}"; do
+                                for PROBE_PROCONDITIONING in "${PROBE_PROCONDITIONINGS[@]}"; do
+                                for BETA1 in "${BETA1s[@]}"; do
+                                for BETA2 in "${BETA2s[@]}"; do
+                                for SANGER_RANK in "${SANGER_RANKS[@]}"; do
+                                for beta_eigen_sanger in  "${beta_eigen_sangers[@]}"; do
+                                for saturating_alpha in "${saturating_alphas[@]}"; do
+                                for alpha_eye_scalar in "${alpha_eye_scalars[@]}"; do
+                                    for MAX_NUM in "${MAX_NUMS[@]}"; do
+                                        for WEIGHT_DECAY in "${WEIGHT_DECAYS[@]}"; do
+                                            for GRAD_CLIP in "${GRAD_CLIPS[@]}"; do
+                                                for OVERFIT in "${OVERFITS[@]}"; do
+                                                
+                                                  this_hidden_size=$(( hidden_size * MODEL_SCALE ))
+                                                  this_memory_size=$(( memory_size * MODEL_SCALE ))
+                                                  this_head_size=${head_size}
+                                                  this_num_head=${num_heads}
+                                                  this_input_size=${input_dim}
+                                                  
+                                                  for numPert in "${NUM_PERTURBATIONS[@]}"; do
+                                                      
+                                                    # Define RUN_NAME_BASE FIRST (before it's used in WANDB flags)
+                                                    RUN_NAME_BASE="${RUN_PREFIX}_${run_counter}_pert${numPert}_s${MODEL_SCALE}_${SOLVER}_lr${LR}_sa${saturating_alpha}"
+
+                                                    EXTRA_FLAGS=""
+                                                    if [ "$PROBE_PROCONDITIONING" = true ]; then
+                                                      EXTRA_FLAGS+=" --use_probe_preconditioning"
+                                                    fi
+                                                    
+                                                    if [ "$ADAM" = true ]; then
+                                                      EXTRA_FLAGS+=" --use_adam"
+                                                    fi
+
+                                                    if [ "$TIE_EPS_TO_LR" = true ]; then
+                                                       EPS=$LR
+                                                    fi
+                                                    
+                                                    if [ "$OVERFIT" = true ]; then
+                                                      EXTRA_FLAGS+=" --overfit_to_one_batch_flag"
+                                                    fi
+    
+                                                    if [ "$WANDB" = true ]; then
+                                                      EXTRA_FLAGS+=" --wandb"
+                                                      EXTRA_FLAGS+=" --wandb_proj ${WANDB_PROJ}"
+                                                      EXTRA_FLAGS+=" --wandb_run_name ${RUN_NAME_BASE}"
+                                                    fi
+        
+                                                    gpu_index=$(( run_counter % NUM_GPUS ))
+                                                    assigned_gpu_id=${GPU_IDS[$gpu_index]}
+                                                    device_string="cuda:${assigned_gpu_id}"
+                                                    
+                                                    RUN_NAME=$(truncate_name "${RUN_NAME_BASE}")
+                                                    echo "[INFO] Launching screen session: $RUN_NAME_BASE"
+                                                    
+                                                    screen -dmS "$RUN_NAME" bash -c "
+                                                    echo '[INFO] Starting run: $RUN_NAME';
+                                                    export WANDB_RUN_NAME=$RUN_NAME;
+                                                    python rge_series_experiments.py \
+                                                          --model_type ${ARCH} \
+                                                          --device ${device_string} \
+                                                          --task ${TASK} \
+                                                          --seq_length ${INPUT_SAMPLE_LENGTH} \
+                                                          --hidden_size ${this_hidden_size} \
+                                                          --memory_size ${this_memory_size} \
+                                                          --head_size ${this_head_size} \
+                                                          --num_heads ${this_num_head} \
+                                                          --input_size ${this_input_size} \
+                                                          --n_layers ${n_layers} \
+                                                          --micro_batch_size ${MICRO_BS} \
+                                                          --macro_batch_size ${MACRO_BS} \
+                                                          --max_iterations ${MAX_ITERS} \
+                                                          --log_interval ${LOG_INTERVAL} \
+                                                          --learning_rate ${LR} \
+                                                          --epsilon ${EPS} \
+                                                          --sanger_rank ${SANGER_RANK} \
+                                                          --weight_decay ${WEIGHT_DECAY} \
+                                                          --max_num ${MAX_NUM} \
+                                                          --grad_clip ${GRAD_CLIP} \
+                                                          --num_perturbations ${numPert} \
+                                                          --tokenizer char_level \
+                                                          --distribution rad \
+                                                          --beta1 ${BETA1} \
+                                                          --beta2 ${BETA2} \
+                                                          --solver ${SOLVER} \
+                                                          --sanger_qr_every 100 \
+                                                          --saturating_alpha ${saturating_alpha} \
+                                                          --warmup_iters 1 \
+                                                          --seed 42 \
+                                                          --alpha_eye_scalar ${alpha_eye_scalar} \
+                                                          --beta_eigen_sanger ${beta_eigen_sanger} \
+                                                          --output_dir ./results_lr_search/lstm${n_layers}layer_overfit \
+                                                          ${EXTRA_FLAGS} \
+                                                          ;
+                                                    echo '[INFO] Finished run: $RUN_NAME_BASE';
+                                                    exec bash
+                                                    "
+                                                    run_counter=$(( run_counter + 1 ))
+                                                   
+                                                    done
+                                                done
+                                            done
+                                        done
+                                    done
+                                done
+                                done
+                                done
+                                done
+                                done
+                                done
+                                done
+                                done
+                            done
+                        done
+                    done
+                done
+            done
+        done
+    done
+done
+
+echo "[INFO] Done launching all ${run_counter} LR search runs."
+echo "[INFO] Results will be in WandB project: ${WANDB_PROJ}"
+

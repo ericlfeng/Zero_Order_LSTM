@@ -717,7 +717,7 @@ def main():
     parser.add_argument("--antithetic", type=str, choices=["true", "false"], default="false", help="if true use antithetic sampling, else dont.. it will double convergence rate!")
     parser.add_argument("--central_difference", type=str, choices=["true", "false"], default="true", help="if true use central difference, else use forward diff.")
     parser.add_argument("--learn_rate_schedule", type=str, choices=["true", "false"], default="false", help="if we want a lr schedule.")
-     parser.add_argument("--model_type", type=str, choices=["DNC", "LSTM"], default="LSTM", help="Type of model to use.")
+    parser.add_argument("--model_type", type=str, choices=["DNC", "LSTM"], default="LSTM", help="Type of model to use.")
     parser.add_argument("--load_from_checkpoint", type=str, default=None,
                     help="Path to a .pt model checkpoint to load before training.")
 

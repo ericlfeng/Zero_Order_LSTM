@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 #   iterate with `self.param_list = list(model.parameters())`.
 # • `forward()` returns  (logits, memory, hidden)  where
 #   `memory` is always None to keep the tuple structure.
+# • Supports multi-layer LSTM via n_layers parameter.
 class LSTM(nn.Module):
     # --------------------------------------------------------------- #
     # Constructor matches the DNC signature                           #
@@ -41,7 +42,8 @@ class LSTM(nn.Module):
         num_heads:   int,
         embed:       nn.Embedding,
         device:      torch.device | None = None,
-        dtype:       torch.dtype = torch.bfloat16
+        dtype:       torch.dtype = torch.bfloat16,
+        n_layers:    int = 1
     ):
         super().__init__()
 
@@ -52,8 +54,9 @@ class LSTM(nn.Module):
         self.hidden_size  = hidden_size # must be num_heads * head_size
         self.memory_size  = memory_size     # unused but preserved
         # self.head_size    = head_size #(THIS IS D TO MATCH FLASH PAPER)
-        # self.num_heads    = num_heads       # (THIS IS N TO MATCH Flash paper)
+        self.num_heads    = num_heads       # (THIS IS N TO MATCH Flash paper)
         self.embed        = embed.to(self.device)
+        self.n_layers     = n_layers
 
         # ------------- Flash-RNN gate sizes ------------------------ #
         self.G = 4                           # LSTM has 4 gates
@@ -63,45 +66,88 @@ class LSTM(nn.Module):
         self.dtype = dtype
 
         if self.hidden_size % self.N != 0:
-            raise ValueError(f"hidden_size={self.hidden_size} not cleanly divisible by num_heads={self.num_heads}, or just set head_size==0 and we will interpret what head_size is based on num_reads {self.num_heads} based on, i.e. { self.hidden_size // self.num_heads}.")
+            raise ValueError(
+                f"hidden_size={self.hidden_size} not cleanly divisible by num_heads={self.num_heads}. "
+                f"Set head_size=0 to auto-compute head_size={self.hidden_size // self.num_heads}."
+            )
+
+        if self.N * self.D != self.hidden_size:
+            raise ValueError(
+                f"num_heads * head_size ({self.N} * {self.D} = {self.N * self.D}) "
+                f"must equal hidden_size ({self.hidden_size}). "
+                f"Either adjust head_size or set head_size=0 for auto-computation."
+            )
             
 
         # ------------- parameters expected by flashrnn ------------- #
-        # Input projection (equivalent to W_emb in the reference snippet)
+        # Input projection for layer 0 (equivalent to W_emb in the reference snippet)
         self.W_in = nn.Parameter(
             torch.randn(input_size, self.G * self.N * self.D, dtype=dtype, device=self.device)
             / math.sqrt(input_size)
         )
 
-        # Recurrent weights  R  [G, N, D, D]
-        self.R = nn.Parameter(
-            torch.randn(self.G, self.N, self.D, self.D, dtype=dtype, device=self.device)
-            / math.sqrt(self.D)
-        )
+        # For multi-layer LSTM: inter-layer projections (layers 1 to n_layers-1)
+        # These project hidden state (N*D) to gate inputs (G*N*D) for subsequent layers
+        if n_layers > 1:
+            self.W_inter = nn.ParameterList([
+                nn.Parameter(
+                    torch.randn(self.N * self.D, self.G * self.N * self.D, dtype=dtype, device=self.device)
+                    / math.sqrt(self.N * self.D)
+                ) for _ in range(n_layers - 1)
+            ])
+        else:
+            self.W_inter = nn.ParameterList()
 
-        # Biases  b  [G, N, D]
-        self.b = nn.Parameter(torch.zeros(self.G, self.N, self.D, dtype=dtype, device=self.device))
+        # Recurrent weights  R  [n_layers, G, N, D, D] - one set per layer
+        self.R_layers = nn.ParameterList([
+            nn.Parameter(
+                torch.randn(self.G, self.N, self.D, self.D, dtype=dtype, device=self.device)
+                / math.sqrt(self.D)
+            ) for _ in range(n_layers)
+        ])
 
-        # Initial states  [S=2, B=1, 1, N, D]   («1» batch placeholder, expanded on forward)
+        # Biases  b  [n_layers, G, N, D] - one set per layer
+        self.b_layers = nn.ParameterList([
+            self._init_lstm_bias(dtype, self.device)
+            for _ in range(n_layers)
+        ])
+
+        # Initial states as buffers (non-trainable)
         S = 2
-        self.states0 = nn.Parameter(
-            torch.zeros(S, 1, 1, self.N, self.D, dtype=dtype, device=self.device),
-            requires_grad=False,   # treat initial state as non-trainable (same as snippet)
-        )
+        for layer_idx in range(n_layers):
+            self.register_buffer(
+                f'states0_layer_{layer_idx}',
+                torch.zeros(S, 1, 1, self.N, self.D, dtype=dtype, device=self.device)
+            )
 
-        # Output projection  W_proj  &  bias
+        # Output projection  W_proj  &  bias (from final layer hidden to output)
         self.W_proj = nn.Parameter(
             torch.randn(output_size, self.N * self.D, dtype=dtype, device=self.device)
-            / math.sqrt(self.D)
+            / math.sqrt(self.N * self.D)
         )
         self.b_proj = nn.Parameter(torch.zeros(output_size, dtype=dtype, device=self.device))
 
         # When FlashRNN is unavailable fall back to a tiny nn.LSTM + Linear
         if not FLASH_OK:
+            warnings.warn(
+                f"FlashRNN not available. Falling back to nn.LSTM which uses different "
+                f"parameters than the FlashRNN path. Parameter counts and optimization "
+                f"behavior will differ. W_in, W_inter, R_layers, b_layers are UNUSED.",
+                RuntimeWarning
+            )
             self.fallback_lstm = nn.LSTM(
-                input_size, hidden_size, batch_first=True, device=self.device, dtype=self.dtype
+                input_size, hidden_size, num_layers=n_layers, batch_first=True, 
+                device=self.device, dtype=self.dtype
             )
             self.fallback_proj = nn.Linear(hidden_size, output_size, device=self.device, dtype=self.dtype)
+
+    def _init_lstm_bias(self, dtype, device):
+        """Initialize LSTM biases with forget gate bias = 1.0"""
+        b = torch.zeros(self.G, self.N, self.D, dtype=dtype, device=device)
+        # FlashRNN gate order: i, f, g, o (indices 0, 1, 2, 3)
+        # Set forget gate (index 1) bias to 1.0
+        b[1, :, :] = 1.0
+        return nn.Parameter(b)
 
     # --------------------------------------------------------------- #
     # Forward (same signature & tuple structure as DNC)               #
@@ -117,7 +163,7 @@ class LSTM(nn.Module):
         Parameters
         ----------
         x_emb   : [B, T, input_size]  pre-embedded sequence
-        hidden  : (h0, c0) with shapes  [1, B, H]
+        hidden  : (h0, c0) with shapes  [n_layers, B, H]
         memory  : ignored (kept to mirror DNC)
         require_gradients : bit flag to store gradients during the fpass or not
 
@@ -125,7 +171,7 @@ class LSTM(nn.Module):
         -------
         logits  : [B, T, output_size]
         memory  : None     (to keep call-site tuple)
-        hidden  : (hN, cN)
+        hidden  : (hN, cN) with shapes [n_layers, B, H]
         """
         
 
@@ -136,47 +182,72 @@ class LSTM(nn.Module):
     
             # ---------------- FlashRNN fast path --------------------- #
             if FLASH_OK and dev.type == "cuda":
-                # ---- 1. project input to gate dimensions (Wx) ---- #
-                Wx = torch.einsum("bte,eg->btg", x_emb.to(self.dtype), self.W_in)   # [B,T,G*N*D]
-                Wx = Wx.view(B, T, self.G, self.N, self.D).contiguous()
-    
-                # ---- 2. initial states ---- #
-                if hidden is None:
-                    # expand states0 to current batch
-                    states0 = self.states0.expand(-1, B, -1, -1, -1).contiguous()
-                else:
-                    h0, c0 = hidden
-                    states0 = torch.stack([
-                        h0.transpose(0,1).reshape(B, 1, self.N, self.D),   # [B,1,N,D]
-                        c0.transpose(0,1).reshape(B, 1, self.N, self.D),
-                    ], dim=0)
-    
-                # ---- 3. run flashrnn ---- #
-                states, _ = flashrnn(                 
-                    Wx,                               # [B,T,G,N,D] contiguous
-                    self.R,
-                    self.b,
-                    states=states0,                   # shape  [S,B,1,N,D]
-                    function="lstm",
-                    backend="cuda",  # or "cuda" or "cuda_fused" etc., cuda_fused is very fussy.. 
-                )                                     # states[0] is h
+                # Store final hidden states for each layer
+                all_hN = []
+                all_cN = []
                 
-                h_flat = states[0].reshape(B, T, self.N * self.D)
+                # Current input to process (starts with embedded input)
+                layer_input = x_emb.to(self.dtype)
+                
+                for layer_idx in range(self.n_layers):
+                    # ---- 1. project input to gate dimensions (Wx) ---- #
+                    if layer_idx == 0:
+                        Wx = torch.einsum("bte,eg->btg", layer_input, self.W_in)   # [B,T,G*N*D]
+                    else:
+                        Wx = torch.einsum("bte,eg->btg", layer_input, self.W_inter[layer_idx - 1])
+                    Wx = Wx.view(B, T, self.G, self.N, self.D).contiguous()
+        
+                    # ---- 2. initial states for this layer ---- #
+                    if hidden is None:
+                        # expand states0 to current batch
+                        states0 = getattr(self, f'states0_layer_{layer_idx}').expand(-1, B, -1, -1, -1).contiguous().to(self.dtype)
+                    else:
+                        h0, c0 = hidden
+                        h0 = h0.to(self.dtype)
+                        c0 = c0.to(self.dtype)
+                        # Extract this layer's hidden state
+                        h0_layer = h0[layer_idx:layer_idx+1]  # [1, B, H]
+                        c0_layer = c0[layer_idx:layer_idx+1]
+                        states0 = torch.stack([
+                            h0_layer.transpose(0,1).reshape(B, 1, self.N, self.D),   # [B,1,N,D]
+                            c0_layer.transpose(0,1).reshape(B, 1, self.N, self.D),
+                        ], dim=0)
+        
+                    # ---- 3. run flashrnn for this layer ---- #
+                    states, _ = flashrnn(                 
+                        Wx,                               # [B,T,G,N,D] contiguous
+                        self.R_layers[layer_idx],
+                        self.b_layers[layer_idx],
+                        states=states0,                   # shape  [S,B,1,N,D]
+                        function="lstm",
+                        backend="cuda",
+                    )
+                    
+                    h_flat = states[0].reshape(B, T, self.N * self.D)
+                    
+                    # Store final hidden state for this layer
+                    hN_layer = h_flat[:, -1, :].unsqueeze(0)          # [1,B,H]
+                    cN_layer = states[1].reshape(B, T, self.N * self.D)[:, -1, :].unsqueeze(0)
+                    all_hN.append(hN_layer)
+                    all_cN.append(cN_layer)
+                    
+                    # Set input for next layer
+                    layer_input = h_flat
     
-                # ---- 4. projection to vocab ---- #
-                logits = torch.einsum("btn,vn->btv", h_flat, self.W_proj) + self.b_proj
+                # ---- 4. projection to vocab (from final layer output) ---- #
+                logits = torch.einsum("btn,vn->btv", layer_input, self.W_proj) + self.b_proj
     
-                # reshape last hidden state to PyTorch format
-                hN = h_flat[:, -1, :].unsqueeze(0)          # [1,B,H]
-                cN = states[1].reshape(B, T, self.N * self.D)[:, -1, :].unsqueeze(0)
+                # Stack hidden states from all layers
+                hN = torch.cat(all_hN, dim=0)  # [n_layers, B, H]
+                cN = torch.cat(all_cN, dim=0)
     
                 return logits, None, (hN.to(dtype), cN.to(dtype))
     
             # ---------------- fallback path (CPU or missing flashrnn)------ #
             else:
                 if hidden is None:
-                    h0 = x_emb.new_zeros(1, B, self.hidden_size, dtype=dtype)
-                    c0 = x_emb.new_zeros(1, B, self.hidden_size, dtype=dtype)
+                    h0 = x_emb.new_zeros(self.n_layers, B, self.hidden_size, dtype=dtype)
+                    c0 = x_emb.new_zeros(self.n_layers, B, self.hidden_size, dtype=dtype)
                 else:
                     h0, c0 = hidden
     

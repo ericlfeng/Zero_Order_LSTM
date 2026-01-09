@@ -2892,6 +2892,7 @@ def train(args):
             embed        = embed,
             device       = device,
             dtype        = dtype,
+            n_layers     = args.n_layers,
         )
     elif args.model_type.upper() == "DNC":
         model = DNC(
@@ -3584,6 +3585,8 @@ def get_argument_parser():
     parser.add_argument("--num_heads", type=int, default=1)
     parser.add_argument("--memory_size", type=int, default=128)
     parser.add_argument("--head_size", type=int, default=128)
+    parser.add_argument("--n_layers", type=int, default=1,
+                        help="Number of LSTM layers (for multi-layer LSTM)")
 
     # Optimization settings
     parser.add_argument("--solver", type=str, default="1SPSA",
