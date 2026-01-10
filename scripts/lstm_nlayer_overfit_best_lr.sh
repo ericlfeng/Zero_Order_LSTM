@@ -23,7 +23,7 @@ WANDB_PROJ="Zero_Order_Opt_LSTM_Overfit_Best"
 
 # Training configuration (longer runs)
 LOG_INTERVAL=100
-MAX_ITERS=5000
+MAX_ITERS=500000
 
 # Fixed hyperparameters (same as sweep script)
 hidden_size=111
