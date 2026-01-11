@@ -119,6 +119,9 @@ def find_best_hyperparameters(results: List[Dict], metric: str = 'final_loss') -
     For each (model_scale, solver, num_perturbations) combination,
     find the best (learning_rate, saturating_alpha) based on the metric.
     
+    Note: 1SPSA does NOT use saturating_alpha (only 1.5-SPSA uses it).
+    For 1SPSA, the alpha in the output is just the default value tested.
+    
     Returns a dictionary mapping (scale, solver, perturbations) to best config.
     """
     # Group results by (model_scale, solver, num_perturbations)
@@ -129,6 +132,13 @@ def find_best_hyperparameters(results: List[Dict], metric: str = 'final_loss') -
         grouped[key].append(r)
     
     print(f"[INFO] Found {len(grouped)} unique (scale, solver, perturbations) configurations")
+    
+    # Count solvers to show info about alpha relevance
+    solver_counts = defaultdict(int)
+    for key in grouped:
+        solver_counts[key[1]] += 1
+    if '1SPSA' in solver_counts:
+        print(f"[INFO] Note: 1SPSA ({solver_counts['1SPSA']} configs) does NOT use saturating_alpha - alpha values shown are defaults")
     
     best_configs = {}
     

@@ -23,7 +23,7 @@ RUN_PREFIX="lstm${n_layers}L_lr_search"
 TASKS=("copy")
 ARCHITECTURES=("LSTM")
 
-MODEL_SCALES=(1 2 4 8)
+MODEL_SCALES=(16 32)
 # base hidden=111 so scale 64 -> ~1B params
 hidden_size=111
 memory_size=111
@@ -99,7 +99,14 @@ for TASK in "${TASKS[@]}"; do
                                 for BETA2 in "${BETA2s[@]}"; do
                                 for SANGER_RANK in "${SANGER_RANKS[@]}"; do
                                 for beta_eigen_sanger in  "${beta_eigen_sangers[@]}"; do
-                                for saturating_alpha in "${saturating_alphas[@]}"; do
+                                # Only sweep saturating_alpha for 1.5-SPSA (1SPSA doesn't use it)
+                                if [ "$SOLVER" = "1SPSA" ]; then
+                                    alphas_to_use=(0.0)  # 1SPSA ignores alpha, so just use default
+                                else
+                                    alphas_to_use=("${saturating_alphas[@]}")
+                                fi
+                                
+                                for saturating_alpha in "${alphas_to_use[@]}"; do
                                 for alpha_eye_scalar in "${alpha_eye_scalars[@]}"; do
                                     for MAX_NUM in "${MAX_NUMS[@]}"; do
                                         for WEIGHT_DECAY in "${WEIGHT_DECAYS[@]}"; do
