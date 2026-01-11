@@ -197,6 +197,12 @@ for TASK in "${TASKS[@]}"; do
                                                     exec bash
                                                     "
                                                     run_counter=$(( run_counter + 1 ))
+                                                    
+                                                    # Rate limiting: small delay between launches to prevent GPU memory overload
+                                                    LAUNCH_DELAY=${LAUNCH_DELAY:-1}  # Default 1 second, set to 0 to disable
+                                                    if [ "$LAUNCH_DELAY" -gt 0 ]; then
+                                                        sleep $LAUNCH_DELAY
+                                                    fi
                                                    
                                                     done
                                                 done
