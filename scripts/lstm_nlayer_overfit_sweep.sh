@@ -30,7 +30,7 @@ head_size=0
 num_heads=1
 input_dim=128
 
-INPUT_SAMPLE_LENGTHS=(100)
+INPUT_SAMPLE_LENGTHS=(10)
 MICRO_BATCH_SIZES=(1)
 MACRO_BATCH_SIZES=(1)
 
@@ -57,7 +57,7 @@ OVERFITS=(true)
 
 # Other configurations:
 LOG_INTERVAL=100
-MAX_ITERS=5000
+MAX_ITERS=500000
 
 TIE_EPS_TO_LR=true
 ADAM=false
