@@ -98,7 +98,14 @@ for TASK in "${TASKS[@]}"; do
                                 for BETA2 in "${BETA2s[@]}"; do
                                 for SANGER_RANK in "${SANGER_RANKS[@]}"; do
                                 for beta_eigen_sanger in  "${beta_eigen_sangers[@]}"; do
-                                for saturating_alpha in "${saturating_alphas[@]}"; do
+                                # Only sweep saturating_alpha for 1.5-SPSA (1SPSA doesn't use it)
+                                if [ "$SOLVER" = "1SPSA" ]; then
+                                    alphas_to_use=(0.0)  # 1SPSA ignores alpha, so just use default
+                                else
+                                    alphas_to_use=("${saturating_alphas[@]}")
+                                fi
+                                
+                                for saturating_alpha in "${alphas_to_use[@]}"; do
                                 for alpha_eye_scalar in "${alpha_eye_scalars[@]}"; do
                                     for MAX_NUM in "${MAX_NUMS[@]}"; do
                                         for WEIGHT_DECAY in "${WEIGHT_DECAYS[@]}"; do
@@ -189,6 +196,12 @@ for TASK in "${TASKS[@]}"; do
                                                     exec bash
                                                     "
                                                     run_counter=$(( run_counter + 1 ))
+                                                    
+                                                    # Rate limiting: small delay between launches to prevent GPU memory overload
+                                                    LAUNCH_DELAY=${LAUNCH_DELAY:-1}  # Default 1 second, set to 0 to disable
+                                                    if [ "$LAUNCH_DELAY" -gt 0 ]; then
+                                                        sleep $LAUNCH_DELAY
+                                                    fi
                                                    
                                                     done
                                                 done
@@ -212,4 +225,5 @@ for TASK in "${TASKS[@]}"; do
     done
 done
 
-echo "[INFO] Done launching all screen sessions."
+echo "[INFO] Done launching all ${run_counter} screen sessions."
+echo "[INFO] Results will be in WandB project: ${WANDB_PROJ}"
