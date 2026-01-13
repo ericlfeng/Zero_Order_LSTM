@@ -35,7 +35,7 @@ fi
 TASKS=("copy")
 ARCHITECTURES=("LSTM")
 
-MODEL_SCALES=(1 2 4 8)
+MODEL_SCALES=(16 32)
 # base hidden=111 so scale 64 -> ~1B params
 hidden_size=111
 memory_size=111
