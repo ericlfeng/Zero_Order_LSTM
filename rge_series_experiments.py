@@ -28,6 +28,15 @@ from simpletokenizers.simpletokenizers import CharTokenizer, NumericTokenizer, g
 from models.models        import LSTM, DNC #Transformer, Mamba, SSM
 from tasks.tasks          import get_examples_for_task, compute_task_loss, compute_task_accuracy
 
+# Cross-run early stopping
+try:
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent / "scripts"))
+    from convergence_tracker import ConvergenceTracker
+    CONVERGENCE_TRACKER_AVAILABLE = True
+except ImportError:
+    CONVERGENCE_TRACKER_AVAILABLE = False
+
 import pdb
 
 # Optional imports
@@ -3105,6 +3114,15 @@ def train(args):
         print(f"Initial LR search complete. Using lr={best_lr:.2e}")
         print("="*50)
 
+    # Initialize convergence tracker for cross-run early stopping
+    convergence_tracker = None
+    if getattr(args, 'enable_early_stopping', False) and CONVERGENCE_TRACKER_AVAILABLE:
+        convergence_tracker = ConvergenceTracker(tracker_file=args.convergence_tracker_file)
+        print(f"[TRACKER] Cross-run early stopping enabled. Tracker file: {args.convergence_tracker_file}")
+        print(f"[TRACKER] Config: model_scale={args.model_scale}, num_perturbations={args.num_perturbations}")
+    elif getattr(args, 'enable_early_stopping', False) and not CONVERGENCE_TRACKER_AVAILABLE:
+        print("[WARNING] Early stopping requested but convergence_tracker module not available")
+
     total_iterations = 0
     for iteration in range(args.max_iterations):
         # Get batch based on task (or reuse same batch if overfitting)
@@ -3162,6 +3180,17 @@ def train(args):
                 total_iterations = iteration
                 status = "success"
                 
+                # Record convergence in the tracker
+                if convergence_tracker is not None:
+                    run_name = getattr(args, 'wandb_run_name', 'unknown')
+                    convergence_tracker.record_convergence(
+                        model_scale=args.model_scale,
+                        num_perturbations=args.num_perturbations,
+                        iteration=iteration,
+                        run_name=run_name,
+                        final_loss=step_metrics['train_loss'][-1]
+                    )
+                
                 # time.sleep(100000)
                 # return
                 break
@@ -3173,6 +3202,19 @@ def train(args):
                 # time.sleep(100000)
                 # return
                 break
+            elif convergence_tracker is not None:
+                # Check if another run has already converged faster
+                should_stop, min_iter = convergence_tracker.should_stop_early(
+                    model_scale=args.model_scale,
+                    num_perturbations=args.num_perturbations,
+                    current_iteration=iteration
+                )
+                if should_stop:
+                    print(f"[EARLY STOP] Stopping at iteration {iteration} - another run converged at {min_iter}")
+                    print(f"[EARLY STOP] Config: model_scale={args.model_scale}, num_perturbations={args.num_perturbations}")
+                    total_iterations = iteration
+                    status = "early_stopped"
+                    break
 
         # ───────── Plateau Detection and LR Re-search ─────────
         if plateau_detector is not None:
@@ -3663,6 +3705,13 @@ def get_argument_parser():
     parser.add_argument("--oom_backoff_sec", type=int, default=600) # 10 min
     parser.add_argument("--oom_max_retries", type=int, default=1000)
 
+    # Cross-run early stopping arguments
+    parser.add_argument("--enable_early_stopping", action="store_true", default=False,
+                        help="Enable cross-run early stopping based on convergence tracker")
+    parser.add_argument("--convergence_tracker_file", type=str, default="./convergence_tracker.json",
+                        help="Path to the shared convergence tracker JSON file")
+    parser.add_argument("--model_scale", type=int, default=1,
+                        help="Model scale parameter for convergence tracking grouping")
 
      # Parse the arguments
     args = parser.parse_args()

@@ -2,6 +2,9 @@
 
 ##############################################################################
 # Run N-layer LSTM overfitting sweeps over HPPs
+# With cross-run early stopping: when one run converges, others with the same
+# (model_scale, num_perturbations) configuration that haven't converged will
+# stop if they exceed the convergence iteration count.
 ##############################################################################
 
 # 1) Kill existing screen sessions
@@ -16,6 +19,16 @@ n_layers=3
 
 ########## RUN PREFIX #############
 RUN_PREFIX="lstm${n_layers}L_overfit"
+
+########## EARLY STOPPING CONFIGURATION #############
+ENABLE_EARLY_STOPPING=true
+CONVERGENCE_TRACKER_FILE="./convergence_tracker_${RUN_PREFIX}.json"
+
+# Reset convergence tracker at start (optional - comment out to resume)
+if [ "$ENABLE_EARLY_STOPPING" = true ]; then
+    echo "[INFO] Resetting convergence tracker: ${CONVERGENCE_TRACKER_FILE}"
+    rm -f "${CONVERGENCE_TRACKER_FILE}"
+fi
 
 
 # Define hyperparameter arrays:
@@ -145,6 +158,12 @@ for TASK in "${TASKS[@]}"; do
                                                       EXTRA_FLAGS+=" --wandb_proj ${WANDB_PROJ}"
                                                       EXTRA_FLAGS+=" --wandb_run_name ${RUN_NAME_BASE}"
                                                     fi
+                                                    
+                                                    if [ "$ENABLE_EARLY_STOPPING" = true ]; then
+                                                      EXTRA_FLAGS+=" --enable_early_stopping"
+                                                      EXTRA_FLAGS+=" --convergence_tracker_file ${CONVERGENCE_TRACKER_FILE}"
+                                                      EXTRA_FLAGS+=" --model_scale ${MODEL_SCALE}"
+                                                    fi
         
                                                     gpu_index=$(( run_counter % NUM_GPUS ))
                                                     assigned_gpu_id=${GPU_IDS[$gpu_index]}
@@ -227,3 +246,18 @@ done
 
 echo "[INFO] Done launching all ${run_counter} screen sessions."
 echo "[INFO] Results will be in WandB project: ${WANDB_PROJ}"
+
+if [ "$ENABLE_EARLY_STOPPING" = true ]; then
+    echo ""
+    echo "============================================================"
+    echo "CROSS-RUN EARLY STOPPING ENABLED"
+    echo "============================================================"
+    echo "Convergence tracker file: ${CONVERGENCE_TRACKER_FILE}"
+    echo ""
+    echo "To monitor convergence in real-time, run:"
+    echo "  python scripts/convergence_tracker.py --tracker_file ${CONVERGENCE_TRACKER_FILE} --action watch"
+    echo ""
+    echo "To view current convergence summary:"
+    echo "  python scripts/convergence_tracker.py --tracker_file ${CONVERGENCE_TRACKER_FILE} --action summary"
+    echo "============================================================"
+fi
