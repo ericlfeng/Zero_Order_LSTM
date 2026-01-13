@@ -43,7 +43,7 @@ input_dim=128
 
 # PTB typically uses longer sequences
 INPUT_SAMPLE_LENGTHS=(10)
-MICRO_BATCH_SIZES=(1)
+MICRO_BATCH_SIZES=(128)
 MACRO_BATCH_SIZES=(1)
 
 # Learning rate sweep - PTB may need different LRs than copy task
