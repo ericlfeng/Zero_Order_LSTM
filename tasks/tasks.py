@@ -205,6 +205,10 @@ def load_penn_tree_bank(data_dir='data', split='train'):
     """Load Penn Treebank data from file or download if not available"""
     # Define file paths
     os.makedirs(data_dir, exist_ok=True)
+    
+    # Map 'val' to 'valid' for compatibility
+    if split == 'val':
+        split = 'valid'
 
     # URLs for PTB datasets
     urls = {
