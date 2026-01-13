@@ -1,10 +1,8 @@
 #!/bin/bash
 
 ##############################################################################
-# Run N-layer LSTM overfitting sweeps over HPPs
-# With cross-run early stopping: when one run converges, others with the same
-# (model_scale, num_perturbations) configuration that haven't converged will
-# stop if they exceed the convergence iteration count.
+# Run N-layer LSTM Penn Treebank training with 1.5-SPSA
+# Sweeps over learning rates, model scales, and perturbations
 ##############################################################################
 
 # 1) Kill existing screen sessions
@@ -18,7 +16,7 @@ echo "[INFO] Starting runs..."
 n_layers=3
 
 ########## RUN PREFIX #############
-RUN_PREFIX="lstm${n_layers}L_overfit"
+RUN_PREFIX="lstm${n_layers}L_ptb"
 
 ########## EARLY STOPPING CONFIGURATION #############
 ENABLE_EARLY_STOPPING=true
@@ -32,7 +30,7 @@ fi
 
 
 # Define hyperparameter arrays:
-TASKS=("copy")
+TASKS=("penn_tree_bank")
 ARCHITECTURES=("LSTM")
 
 MODEL_SCALES=(1 2 4 8)
@@ -43,10 +41,12 @@ head_size=0
 num_heads=1
 input_dim=128
 
-INPUT_SAMPLE_LENGTHS=(10)
+# PTB typically uses longer sequences
+INPUT_SAMPLE_LENGTHS=(100)
 MICRO_BATCH_SIZES=(1)
 MACRO_BATCH_SIZES=(1)
 
+# Learning rate sweep - PTB may need different LRs than copy task
 LEARNING_RATES=(0.1 0.05 0.01 0.005 0.001)
 EPSILONS=(0.1)
 
@@ -63,10 +63,11 @@ SANGER_RANKS=(1)
 alpha_eye_scalars=(1.0)
 beta_eigen_sangers=(0)
 
-NUM_PERTURBATIONS=(96 512)
+NUM_PERTURBATIONS=(8 96 512)
 saturating_alphas=(0.1)
 
-OVERFITS=(true)
+# For PTB, you can train on full dataset or overfit to one batch
+OVERFITS=(false)
 
 # Other configurations:
 LOG_INTERVAL=100
@@ -76,7 +77,7 @@ TIE_EPS_TO_LR=true
 ADAM=false
 WANDB=true
 
-WANDB_PROJ="Zero_Order_Opt_LSTM_Overfit_Fixed"
+WANDB_PROJ="Zero_Order_Opt_LSTM_PTB"
 
 # Function to truncate a long session name (if needed)
 truncate_name() {
@@ -208,7 +209,7 @@ for TASK in "${TASKS[@]}"; do
                                                           --seed 42 \
                                                           --alpha_eye_scalar ${alpha_eye_scalar} \
                                                           --beta_eigen_sanger ${beta_eigen_sanger} \
-                                                          --output_dir ./results_lstm${n_layers}layer_overfit_fixed \
+                                                          --output_dir ./results_lstm${n_layers}layer_ptb \
                                                           ${EXTRA_FLAGS} \
                                                           ;
                                                     echo '[INFO] Finished run: $RUN_NAME_BASE';
@@ -261,3 +262,4 @@ if [ "$ENABLE_EARLY_STOPPING" = true ]; then
     echo "  python scripts/convergence_tracker.py --tracker_file ${CONVERGENCE_TRACKER_FILE} --action summary"
     echo "============================================================"
 fi
+

@@ -75,13 +75,34 @@ def get_results_by_config(results: List[Dict]) -> Dict:
     """
     Group results by (scale, solver, perturbations).
     Returns dict mapping (scale, solver, pert) -> result
+    
+    For converged runs: keeps the one with fewest iterations (fastest convergence)
+    For non-converged runs: keeps any result as placeholder
+    Prioritizes converged runs over non-converged ones
     """
     by_config = {}
     for r in results:
         key = (r['model_scale'], r['solver'], r['num_perturbations'])
-        # If multiple results for same config, keep the one with more iterations
-        if key not in by_config or r['iters'] > by_config[key]['iters']:
+        
+        # Check if this result converged
+        r_converged = r['status'] in ('converged', 'success')
+        
+        if key not in by_config:
+            # First result for this config
             by_config[key] = r
+        else:
+            existing = by_config[key]
+            existing_converged = existing['status'] in ('converged', 'success')
+            
+            # Replace if: converged and existing didn't, OR both converged and this is faster
+            if r_converged and not existing_converged:
+                by_config[key] = r
+            elif r_converged and existing_converged and r['iters'] < existing['iters']:
+                by_config[key] = r
+            elif not r_converged and not existing_converged and r['iters'] > existing['iters']:
+                # For non-converged, keep the one that ran longer (more information)
+                by_config[key] = r
+    
     return by_config
 
 
