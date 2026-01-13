@@ -544,7 +544,7 @@ def prune_screens(results: List[Dict], dry_run: bool = True):
 
 
 def list_running_screens_with_status(results: List[Dict]):
-    """List all running screens with their convergence status."""
+    """List all running screens with their convergence status and current iteration."""
     # Get best iterations per (scale, perts, solver) from successful runs
     grouped = group_results(results, include_solver=True)
     best_iters = {}
@@ -557,22 +557,24 @@ def list_running_screens_with_status(results: List[Dict]):
     
     screens = get_running_screens()
     
-    print("\n" + "="*100)
+    print("\n" + "="*120)
     print(f"RUNNING SCREENS: {len(screens)}")
-    print("="*100)
-    print(f"{'Screen Name':<50} {'Scale':<6} {'Perts':<6} {'Solver':<10} {'Status'}")
-    print("-"*100)
+    print("Fetching current iterations (this may take a minute)...")
+    print("="*120)
+    print(f"{'Screen Name':<50} {'Scale':<6} {'Perts':<6} {'Solver':<10} {'Best':<8} {'Curr':<8} {'Status'}")
+    print("-"*120)
     
     should_prune = 0
     still_needed = 0
-    unknown = 0
-    need_iteration_check = 0
+    keep_under_best = 0
+    unknown_iter = 0
+    unknown_format = 0
     
     for name, full_id in sorted(screens.items()):
         parsed = parse_screen_name(name)
         if not parsed:
-            print(f"{name:<50} {'?':<6} {'?':<6} {'?':<10} unknown format")
-            unknown += 1
+            print(f"{name:<50} {'?':<6} {'?':<6} {'?':<10} {'-':<8} {'-':<8} unknown format")
+            unknown_format += 1
             continue
         
         scale = parsed.get('scale')
@@ -580,24 +582,44 @@ def list_running_screens_with_status(results: List[Dict]):
         solver = parsed.get('solver')
         
         if scale is None or perts is None or solver is None:
-            print(f"{name:<50} {str(scale):<6} {str(perts):<6} {str(solver):<10} missing info")
-            unknown += 1
+            print(f"{name:<50} {str(scale):<6} {str(perts):<6} {str(solver):<10} {'-':<8} {'-':<8} missing info")
+            unknown_format += 1
             continue
         
         key = (scale, perts, solver)
-        if key in best_iters:
-            best = best_iters[key]
-            status = f"HAS BASELINE (best={best}) - check iter"
-            need_iteration_check += 1
-        else:
-            status = "KEEP (no success yet for this solver)"
-            still_needed += 1
         
-        print(f"{name:<50} {scale:<6} {perts:<6} {solver:<10} {status}")
+        # Get current iteration
+        current_iter = get_screen_current_iteration(full_id)
+        curr_str = str(current_iter) if current_iter is not None else '?'
+        
+        if key not in best_iters:
+            # No successful run for this combo yet - keep it running
+            status = "KEEP (no baseline)"
+            still_needed += 1
+            best_str = '-'
+        else:
+            best = best_iters[key]
+            best_str = str(best)
+            
+            if current_iter is None:
+                status = "? (can't read iter)"
+                unknown_iter += 1
+            elif current_iter > best:
+                status = f"PRUNE (curr > best)"
+                should_prune += 1
+            else:
+                status = f"KEEP (curr <= best)"
+                keep_under_best += 1
+        
+        print(f"{name:<50} {scale:<6} {perts:<6} {solver:<10} {best_str:<8} {curr_str:<8} {status}")
     
-    print("-"*100)
-    print(f"Summary: {still_needed} still needed (no baseline), {need_iteration_check} need iteration check, {unknown} unknown")
-    print("\nRun with --prune to check iterations and determine which to actually kill.")
+    print("-"*120)
+    print(f"Summary:")
+    print(f"  {still_needed} KEEP - no baseline yet (still need success for this combo)")
+    print(f"  {keep_under_best} KEEP - current iter <= best (still have a chance)")
+    print(f"  {should_prune} PRUNE - current iter > best (can't beat existing)")
+    print(f"  {unknown_iter} UNKNOWN - couldn't read current iteration")
+    print(f"  {unknown_format} UNKNOWN - couldn't parse screen name")
 
 
 def main():
