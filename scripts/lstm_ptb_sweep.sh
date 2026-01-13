@@ -42,7 +42,7 @@ num_heads=1
 input_dim=128
 
 # PTB typically uses longer sequences
-INPUT_SAMPLE_LENGTHS=(100)
+INPUT_SAMPLE_LENGTHS=(10)
 MICRO_BATCH_SIZES=(1)
 MACRO_BATCH_SIZES=(1)
 
