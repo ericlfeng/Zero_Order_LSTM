@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """
-Tool to manually manage running screens.
 Analyze existing sweep results and optionally populate convergence tracker.
 
 Usage:
@@ -78,11 +77,14 @@ def load_all_results(results_dir: str) -> List[Dict]:
     return results
 
 
-def group_results(results: List[Dict]) -> Dict[Tuple, List[Dict]]:
-    """Group results by (model_scale, num_perturbations)."""
+def group_results(results: List[Dict], include_solver: bool = False) -> Dict[Tuple, List[Dict]]:
+    """Group results by (model_scale, num_perturbations) or (model_scale, num_perturbations, solver)."""
     grouped = defaultdict(list)
     for r in results:
-        key = (r['model_scale'], r['num_perturbations'])
+        if include_solver:
+            key = (r['model_scale'], r['num_perturbations'], r['solver'])
+        else:
+            key = (r['model_scale'], r['num_perturbations'])
         grouped[key].append(r)
     return grouped
 
@@ -110,25 +112,24 @@ def print_summary_table(results: List[Dict]):
 
 
 def print_convergence_summary(results: List[Dict]):
-    """Print convergence summary grouped by (scale, perturbations)."""
-    grouped = group_results(results)
+    """Print convergence summary grouped by (scale, perturbations, solver)."""
+    grouped = group_results(results, include_solver=True)
     
-    print("\n" + "="*80)
-    print("CONVERGENCE BY (MODEL_SCALE, NUM_PERTURBATIONS)")
-    print("="*80)
-    print(f"{'Scale':<8} {'Perts':<8} {'Success':<10} {'Diverged':<10} {'Other':<10} {'Best Iter':<12} {'Best LR'}")
-    print("-"*80)
+    print("\n" + "="*90)
+    print("CONVERGENCE BY (MODEL_SCALE, NUM_PERTURBATIONS, SOLVER)")
+    print("="*90)
+    print(f"{'Scale':<8} {'Perts':<8} {'Solver':<12} {'Success':<10} {'Diverged':<10} {'Best Iter':<12} {'Best LR'}")
+    print("-"*90)
     
-    for (scale, perts), runs in sorted(grouped.items()):
+    for (scale, perts, solver), runs in sorted(grouped.items(), key=lambda x: (x[0][0] or 0, x[0][1] or 0, x[0][2] or '')):
         success = [r for r in runs if r['status'] == 'success']
         diverged = [r for r in runs if r['status'] == 'diverged']
-        other = [r for r in runs if r['status'] not in ['success', 'diverged']]
         
         best_iter = min([r['iters'] for r in success]) if success else '-'
         best_run = min(success, key=lambda x: x['iters']) if success else None
         best_lr = f"{best_run['learning_rate']}" if best_run else '-'
         
-        print(f"{scale:<8} {perts:<8} {len(success):<10} {len(diverged):<10} {len(other):<10} {str(best_iter):<12} {best_lr}")
+        print(f"{scale:<8} {perts:<8} {solver or '-':<12} {len(success):<10} {len(diverged):<10} {str(best_iter):<12} {best_lr}")
 
 
 def print_detailed_success(results: List[Dict]):
@@ -272,11 +273,12 @@ def parse_screen_name(name: str) -> Optional[Dict]:
     """
     Parse screen name to extract hyperparameters.
     Expected format: lstm3L_overfit_123_pert96_s4_1SPSA_lr0.01_sa0.1
+                 or: lstm3L_overfit_123_pert96_s4_1.5-SPSA_lr0.01_sa0.1
     """
     patterns = {
         'pert': r'pert(\d+)',
         'scale': r'_s(\d+)_',
-        'solver': r'_(1SPSA|1\.5-SPSA|2SPSA)_',
+        'solver': r'_(1SPSA|1\.5-SPSA|2SPSA|BanditSPSA|Sanger-SPSA)_',
         'lr': r'_lr([\d.]+)',
         'sa': r'_sa([\d.]+)',
     }
@@ -296,38 +298,129 @@ def parse_screen_name(name: str) -> Optional[Dict]:
     return result if result else None
 
 
-def find_screens_to_prune(results: List[Dict], dry_run: bool = True) -> List[Tuple[str, str, int, int]]:
+def get_screen_current_iteration(full_id: str, log_dir: str = None) -> Optional[int]:
+    """
+    Try to get the current iteration of a running screen.
+    
+    This attempts to capture the screen's scrollback buffer
+    to find the current iteration.
+    """
+    import subprocess
+    import tempfile
+    import os
+    
+    # Create a unique temp file for this screen
+    tmp_file = f'/tmp/screen_output_{os.getpid()}_{full_id.replace(".", "_")}.txt'
+    
+    try:
+        # Method 1: Use hardcopy to dump screen contents
+        result = subprocess.run(
+            ['screen', '-S', full_id, '-X', 'hardcopy', '-h', tmp_file],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        # Give it a moment to write
+        import time
+        time.sleep(0.1)
+        
+        if os.path.exists(tmp_file):
+            try:
+                with open(tmp_file, 'r') as f:
+                    content = f.read()
+                
+                # Look for iteration pattern like "Iteration 123/500000"
+                matches = re.findall(r'Iteration (\d+)/\d+', content)
+                if matches:
+                    # Return the last (most recent) iteration
+                    return int(matches[-1])
+            except Exception as e:
+                pass
+            finally:
+                # Clean up
+                try:
+                    os.remove(tmp_file)
+                except:
+                    pass
+    except subprocess.TimeoutExpired:
+        pass
+    except Exception as e:
+        pass
+    
+    # Method 2: Try without -h flag (just visible screen, not scrollback)
+    try:
+        result = subprocess.run(
+            ['screen', '-S', full_id, '-X', 'hardcopy', tmp_file],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        import time
+        time.sleep(0.1)
+        
+        if os.path.exists(tmp_file):
+            try:
+                with open(tmp_file, 'r') as f:
+                    content = f.read()
+                
+                matches = re.findall(r'Iteration (\d+)/\d+', content)
+                if matches:
+                    return int(matches[-1])
+            except:
+                pass
+            finally:
+                try:
+                    os.remove(tmp_file)
+                except:
+                    pass
+    except:
+        pass
+    
+    return None
+
+
+def find_screens_to_prune(results: List[Dict], dry_run: bool = True) -> List[Tuple[str, str, int, int, str, int, Optional[int]]]:
     """
     Find running screens that should be pruned based on convergence.
     
-    Returns list of (screen_name, full_id, scale, perts) to kill.
+    Now includes solver in the grouping key and checks current iteration.
+    
+    Returns list of (screen_name, full_id, scale, perts, solver, best_iter, current_iter) to kill.
     """
-    # Get best iterations per (scale, perts) from successful runs
-    grouped = group_results(results)
+    # Get best iterations per (scale, perts, solver) from successful runs
+    grouped = group_results(results, include_solver=True)
     best_iters = {}
     
-    for (scale, perts), runs in grouped.items():
+    for (scale, perts, solver), runs in grouped.items():
         success = [r for r in runs if r['status'] == 'success']
         if success:
             best = min(r['iters'] for r in success if r['iters'])
-            best_iters[(scale, perts)] = best
+            best_iters[(scale, perts, solver)] = best
     
     if not best_iters:
         print("No successful runs yet - nothing to prune against.")
         return []
     
-    print("\n" + "="*60)
+    print("\n" + "="*70)
     print("CONVERGENCE BASELINES (from successful runs)")
-    print("="*60)
-    for (scale, perts), iters in sorted(best_iters.items()):
-        print(f"  Scale {scale}, Perts {perts}: converged at {iters} iterations")
+    print("="*70)
+    print(f"{'Scale':<8} {'Perts':<8} {'Solver':<12} {'Best Iter'}")
+    print("-"*70)
+    for (scale, perts, solver), iters in sorted(best_iters.items()):
+        print(f"{scale:<8} {perts:<8} {solver:<12} {iters}")
     
     # Get running screens
     screens = get_running_screens()
     print(f"\nFound {len(screens)} running screen sessions")
+    print("Checking current iterations (this may take a moment)...")
     
     # Find screens to prune
     to_prune = []
+    to_keep = []
+    no_baseline = []
+    
     for name, full_id in screens.items():
         parsed = parse_screen_name(name)
         if not parsed:
@@ -335,15 +428,58 @@ def find_screens_to_prune(results: List[Dict], dry_run: bool = True) -> List[Tup
         
         scale = parsed.get('scale')
         perts = parsed.get('pert')
+        solver = parsed.get('solver')
         
-        if scale is None or perts is None:
+        if scale is None or perts is None or solver is None:
             continue
         
-        key = (scale, perts)
-        if key in best_iters:
-            # This (scale, perts) combo already has a successful run
-            # The screen should be pruned (it can't beat the existing best)
-            to_prune.append((name, full_id, scale, perts, best_iters[key]))
+        key = (scale, perts, solver)
+        
+        if key not in best_iters:
+            # No successful run for this combo yet - keep it running
+            no_baseline.append((name, full_id, scale, perts, solver))
+            continue
+        
+        best_iter = best_iters[key]
+        
+        # Try to get current iteration
+        current_iter = get_screen_current_iteration(full_id)
+        
+        if current_iter is not None and current_iter > best_iter:
+            # Current iteration exceeds best - should prune
+            to_prune.append((name, full_id, scale, perts, solver, best_iter, current_iter))
+        elif current_iter is not None:
+            # Still has a chance
+            to_keep.append((name, full_id, scale, perts, solver, best_iter, current_iter))
+        else:
+            # Couldn't determine iteration - mark as unknown
+            # Be conservative: don't prune if we can't verify
+            to_keep.append((name, full_id, scale, perts, solver, best_iter, None))
+    
+    # Print summary of screens without baseline (KEEP - no success yet)
+    if no_baseline:
+        print("\n" + "="*70)
+        print(f"SCREENS WITHOUT BASELINE (KEEP - no success for this combo yet): {len(no_baseline)}")
+        print("="*70)
+        print(f"{'Screen Name':<55} {'Scale':<6} {'Perts':<6} {'Solver'}")
+        print("-"*70)
+        for name, full_id, scale, perts, solver in no_baseline[:20]:
+            print(f"{name:<55} {scale:<6} {perts:<6} {solver}")
+        if len(no_baseline) > 20:
+            print(f"... and {len(no_baseline) - 20} more")
+    
+    # Print screens we're keeping
+    if to_keep:
+        print("\n" + "="*70)
+        print(f"SCREENS TO KEEP (iteration <= best): {len(to_keep)}")
+        print("="*70)
+        print(f"{'Screen Name':<50} {'Scale':<6} {'Perts':<6} {'Solver':<10} {'Best':<8} {'Curr'}")
+        print("-"*90)
+        for name, full_id, scale, perts, solver, best_iter, current_iter in to_keep[:20]:
+            curr_str = str(current_iter) if current_iter is not None else '?'
+            print(f"{name:<50} {scale:<6} {perts:<6} {solver:<10} {best_iter:<8} {curr_str}")
+        if len(to_keep) > 20:
+            print(f"... and {len(to_keep) - 20} more")
     
     return to_prune
 
@@ -358,24 +494,25 @@ def prune_screens(results: List[Dict], dry_run: bool = True):
         print("\nNo screens to prune.")
         return
     
-    print("\n" + "="*60)
-    print(f"SCREENS TO PRUNE: {len(to_prune)}")
-    print("="*60)
-    print(f"{'Screen Name':<60} {'Scale':<6} {'Perts':<6} {'Best Iter'}")
-    print("-"*80)
+    print("\n" + "="*90)
+    print(f"SCREENS TO PRUNE (iteration > best): {len(to_prune)}")
+    print("="*90)
+    print(f"{'Screen Name':<50} {'Scale':<6} {'Perts':<6} {'Solver':<10} {'Best':<8} {'Curr'}")
+    print("-"*90)
     
-    for name, full_id, scale, perts, best_iter in to_prune:
-        print(f"{name:<60} {scale:<6} {perts:<6} {best_iter}")
+    for name, full_id, scale, perts, solver, best_iter, current_iter in to_prune:
+        curr_str = str(current_iter) if current_iter is not None else '?'
+        print(f"{name:<50} {scale:<6} {perts:<6} {solver:<10} {best_iter:<8} {curr_str}")
     
     if dry_run:
         print("\n" + "="*60)
         print("DRY RUN - No screens killed.")
-        print("Run with --prune (without --dry_run) to actually kill these screens.")
+        print("Run with --prune --no_dry_run to actually kill these screens.")
         print("="*60)
         
         # Print the commands that would be run
         print("\nCommands that would be executed:")
-        for name, full_id, _, _, _ in to_prune[:5]:  # Show first 5
+        for name, full_id, _, _, _, _, _ in to_prune[:5]:
             print(f"  screen -S \"{full_id}\" -X quit")
         if len(to_prune) > 5:
             print(f"  ... and {len(to_prune) - 5} more")
@@ -386,7 +523,7 @@ def prune_screens(results: List[Dict], dry_run: bool = True):
         
         killed = 0
         failed = 0
-        for name, full_id, scale, perts, _ in to_prune:
+        for name, full_id, scale, perts, solver, _, _ in to_prune:
             try:
                 result = subprocess.run(
                     ['screen', '-S', full_id, '-X', 'quit'],
@@ -408,55 +545,59 @@ def prune_screens(results: List[Dict], dry_run: bool = True):
 
 def list_running_screens_with_status(results: List[Dict]):
     """List all running screens with their convergence status."""
-    # Get best iterations per (scale, perts) from successful runs
-    grouped = group_results(results)
+    # Get best iterations per (scale, perts, solver) from successful runs
+    grouped = group_results(results, include_solver=True)
     best_iters = {}
     
-    for (scale, perts), runs in grouped.items():
+    for (scale, perts, solver), runs in grouped.items():
         success = [r for r in runs if r['status'] == 'success']
         if success:
             best = min(r['iters'] for r in success if r['iters'])
-            best_iters[(scale, perts)] = best
+            best_iters[(scale, perts, solver)] = best
     
     screens = get_running_screens()
     
-    print("\n" + "="*80)
+    print("\n" + "="*100)
     print(f"RUNNING SCREENS: {len(screens)}")
-    print("="*80)
-    print(f"{'Screen Name':<55} {'Scale':<6} {'Perts':<6} {'Status'}")
-    print("-"*80)
+    print("="*100)
+    print(f"{'Screen Name':<50} {'Scale':<6} {'Perts':<6} {'Solver':<10} {'Status'}")
+    print("-"*100)
     
     should_prune = 0
     still_needed = 0
     unknown = 0
+    need_iteration_check = 0
     
     for name, full_id in sorted(screens.items()):
         parsed = parse_screen_name(name)
         if not parsed:
-            print(f"{name:<55} {'?':<6} {'?':<6} unknown format")
+            print(f"{name:<50} {'?':<6} {'?':<6} {'?':<10} unknown format")
             unknown += 1
             continue
         
         scale = parsed.get('scale')
         perts = parsed.get('pert')
+        solver = parsed.get('solver')
         
-        if scale is None or perts is None:
-            print(f"{name:<55} {str(scale):<6} {str(perts):<6} missing info")
+        if scale is None or perts is None or solver is None:
+            print(f"{name:<50} {str(scale):<6} {str(perts):<6} {str(solver):<10} missing info")
             unknown += 1
             continue
         
-        key = (scale, perts)
+        key = (scale, perts, solver)
         if key in best_iters:
-            status = f"PRUNE (best={best_iters[key]})"
-            should_prune += 1
+            best = best_iters[key]
+            status = f"HAS BASELINE (best={best}) - check iter"
+            need_iteration_check += 1
         else:
-            status = "KEEP (no success yet)"
+            status = "KEEP (no success yet for this solver)"
             still_needed += 1
         
-        print(f"{name:<55} {scale:<6} {perts:<6} {status}")
+        print(f"{name:<50} {scale:<6} {perts:<6} {solver:<10} {status}")
     
-    print("-"*80)
-    print(f"Summary: {should_prune} to prune, {still_needed} still needed, {unknown} unknown")
+    print("-"*100)
+    print(f"Summary: {still_needed} still needed (no baseline), {need_iteration_check} need iteration check, {unknown} unknown")
+    print("\nRun with --prune to check iterations and determine which to actually kill.")
 
 
 def main():
