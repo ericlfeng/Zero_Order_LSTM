@@ -3119,7 +3119,7 @@ def train(args):
     if getattr(args, 'enable_early_stopping', False) and CONVERGENCE_TRACKER_AVAILABLE:
         convergence_tracker = ConvergenceTracker(tracker_file=args.convergence_tracker_file)
         print(f"[TRACKER] Cross-run early stopping enabled. Tracker file: {args.convergence_tracker_file}")
-        print(f"[TRACKER] Config: model_scale={args.model_scale}, num_perturbations={args.num_perturbations}")
+        print(f"[TRACKER] Config: solver={args.solver}, model_scale={args.model_scale}, num_perturbations={args.num_perturbations}")
     elif getattr(args, 'enable_early_stopping', False) and not CONVERGENCE_TRACKER_AVAILABLE:
         print("[WARNING] Early stopping requested but convergence_tracker module not available")
 
@@ -3184,6 +3184,7 @@ def train(args):
                 if convergence_tracker is not None:
                     run_name = getattr(args, 'wandb_run_name', 'unknown')
                     convergence_tracker.record_convergence(
+                        solver=args.solver,
                         model_scale=args.model_scale,
                         num_perturbations=args.num_perturbations,
                         iteration=iteration,
@@ -3205,13 +3206,14 @@ def train(args):
             elif convergence_tracker is not None:
                 # Check if another run has already converged faster
                 should_stop, min_iter = convergence_tracker.should_stop_early(
+                    solver=args.solver,
                     model_scale=args.model_scale,
                     num_perturbations=args.num_perturbations,
                     current_iteration=iteration
                 )
                 if should_stop:
                     print(f"[EARLY STOP] Stopping at iteration {iteration} - another run converged at {min_iter}")
-                    print(f"[EARLY STOP] Config: model_scale={args.model_scale}, num_perturbations={args.num_perturbations}")
+                    print(f"[EARLY STOP] Config: solver={args.solver}, model_scale={args.model_scale}, num_perturbations={args.num_perturbations}")
                     total_iterations = iteration
                     status = "early_stopped"
                     break

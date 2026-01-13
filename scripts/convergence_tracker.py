@@ -41,9 +41,9 @@ class ConvergenceTracker:
         if not self.tracker_file.exists():
             self._write_data({})
     
-    def _get_key(self, model_scale: int, num_perturbations: int) -> str:
-        """Generate a unique key for the (model_scale, num_perturbations) pair."""
-        return f"s{model_scale}_pert{num_perturbations}"
+    def _get_key(self, solver: str, model_scale: int, num_perturbations: int) -> str:
+        """Generate a unique key for the (solver, model_scale, num_perturbations) combination."""
+        return f"{solver}_s{model_scale}_pert{num_perturbations}"
     
     def _read_data(self) -> Dict:
         """Read tracker data with file locking."""
@@ -69,7 +69,7 @@ class ConvergenceTracker:
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     
-    def record_convergence(self, model_scale: int, num_perturbations: int, 
+    def record_convergence(self, solver: str, model_scale: int, num_perturbations: int, 
                           iteration: int, run_name: str, final_loss: float) -> bool:
         """
         Record a convergence event with atomic read-modify-write.
@@ -79,6 +79,7 @@ class ConvergenceTracker:
         even if runs finish out of order (not time-aligned).
         
         Args:
+            solver: The solver type (1SPSA, 1.5-SPSA, etc.)
             model_scale: The model scale (1, 2, 4, 8, etc.)
             num_perturbations: Number of perturbations per batch (96, 512, etc.)
             iteration: The iteration at which convergence occurred
@@ -88,7 +89,7 @@ class ConvergenceTracker:
         Returns:
             True if this is a new record (fastest convergence), False otherwise
         """
-        key = self._get_key(model_scale, num_perturbations)
+        key = self._get_key(solver, model_scale, num_perturbations)
         is_new_record = False
         current_min = None
         
@@ -145,12 +146,13 @@ class ConvergenceTracker:
         
         return is_new_record
     
-    def should_stop_early(self, model_scale: int, num_perturbations: int, 
+    def should_stop_early(self, solver: str, model_scale: int, num_perturbations: int, 
                          current_iteration: int) -> Tuple[bool, Optional[int]]:
         """
         Check if this run should stop early.
         
         Args:
+            solver: The solver type
             model_scale: The model scale
             num_perturbations: Number of perturbations
             current_iteration: Current training iteration
@@ -160,7 +162,7 @@ class ConvergenceTracker:
             If should_stop is True, min_iteration_recorded contains the iteration
             at which another run converged.
         """
-        key = self._get_key(model_scale, num_perturbations)
+        key = self._get_key(solver, model_scale, num_perturbations)
         data = self._read_data()
         
         if key in data:
@@ -170,10 +172,10 @@ class ConvergenceTracker:
         
         return False, None
     
-    def get_min_convergence_iteration(self, model_scale: int, 
+    def get_min_convergence_iteration(self, solver: str, model_scale: int, 
                                        num_perturbations: int) -> Optional[int]:
         """Get the minimum convergence iteration for a given configuration."""
-        key = self._get_key(model_scale, num_perturbations)
+        key = self._get_key(solver, model_scale, num_perturbations)
         data = self._read_data()
         
         if key in data:
