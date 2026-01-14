@@ -17,12 +17,23 @@ from collections import defaultdict
 from typing import Dict, List, Tuple
 
 
-def calculate_lstm_params(hidden_size: int, input_size: int, n_layers: int) -> int:
+def calculate_lstm_params(hidden_size: int, input_size: int, n_layers: int, output_size: int = None) -> int:
     """Calculate approximate parameter count for an LSTM."""
-    layer1_params = 4 * (input_size * hidden_size + hidden_size * hidden_size + 2 * hidden_size)
-    other_layer_params = 4 * (hidden_size * hidden_size + hidden_size * hidden_size + 2 * hidden_size)
+    if output_size is None:
+        output_size = input_size
+    
+    # First layer: input_size -> hidden_size
+    # 4 gates * (input weights + recurrent weights + biases)
+    layer1_params = 4 * (input_size * hidden_size + hidden_size * hidden_size + hidden_size)
+    
+    # Subsequent layers: hidden_size -> hidden_size
+    other_layer_params = 4 * (hidden_size * hidden_size + hidden_size * hidden_size + hidden_size)
+    
     total = layer1_params + (n_layers - 1) * other_layer_params
-    total += hidden_size * input_size + input_size
+    
+    # Output layer: hidden_size -> output_size
+    total += hidden_size * output_size + output_size
+    
     return total
 
 
