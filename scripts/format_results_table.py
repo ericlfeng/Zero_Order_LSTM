@@ -17,23 +17,29 @@ from collections import defaultdict
 from typing import Dict, List, Tuple
 
 
-def calculate_lstm_params(hidden_size: int, input_size: int, n_layers: int, output_size: int = None) -> int:
-    """Calculate approximate parameter count for an LSTM."""
-    if output_size is None:
-        output_size = input_size
+def calculate_lstm_params(hidden_size: int, input_size: int, n_layers: int, output_size: int = 256) -> int:
+    """Calculate parameters for the actual LSTM implementation."""
     
-    # First layer: input_size -> hidden_size
-    # 4 gates * (input weights + recurrent weights + biases)
-    layer1_params = 4 * (input_size * hidden_size + hidden_size * hidden_size + hidden_size)
+    # Input projection (layer 1 only)
+    W_in = input_size * (4 * hidden_size)
     
-    # Subsequent layers: hidden_size -> hidden_size
-    other_layer_params = 4 * (hidden_size * hidden_size + hidden_size * hidden_size + hidden_size)
+    # Inter-layer projections (layers 2-N)
+    W_inter = (n_layers - 1) * hidden_size * (4 * hidden_size)
     
-    total = layer1_params + (n_layers - 1) * other_layer_params
+    # Recurrent weights (all layers)
+    R_layers = n_layers * 4 * hidden_size * hidden_size
     
-    # Output layer: hidden_size -> output_size
-    total += hidden_size * output_size + output_size
+    # Biases (all layers)
+    b_layers = n_layers * 4 * hidden_size
     
+    # Output projection
+    W_proj = hidden_size * output_size
+    b_proj = output_size
+    
+    # Embedding
+    embed = output_size * input_size
+    
+    total = W_in + W_inter + R_layers + b_layers + W_proj + b_proj + embed
     return total
 
 
@@ -68,7 +74,7 @@ def load_results_csv(input_file: str) -> List[Dict]:
 
 
 def format_table(results: List[Dict], output_format: str = 'tsv', 
-                 show_params: bool = True, input_size: int = 128):
+                 show_params: bool = True, input_size: int = 128, output_size: int = 100):
     """
     Format results into a table.
     
@@ -107,7 +113,7 @@ def format_table(results: List[Dict], output_format: str = 'tsv',
         params = []
         for s in scales:
             hidden = base_hidden * s
-            p = calculate_lstm_params(hidden, input_size, n_layers)
+            p = calculate_lstm_params(hidden, input_size, n_layers, output_size)
             params.append(f"{p:,}")
         print(f"# params{sep}" + sep.join(params))
     
@@ -176,6 +182,12 @@ Examples:
         default=128,
         help='Input size for parameter calculation (default: 128)'
     )
+    parser.add_argument(
+        '--output_size',
+        type=int,
+        default=256,
+        help='Output vocab size for parameter calculation (default: 256)'
+    )
     
     args = parser.parse_args()
     
@@ -196,7 +208,8 @@ Examples:
         results, 
         output_format=args.format, 
         show_params=not args.no_params,
-        input_size=args.input_size
+        input_size=args.input_size,
+        output_size=args.output_size
     )
     
     # Restore stdout if we redirected it
