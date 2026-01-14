@@ -2811,7 +2811,7 @@ def evaluate(model, tok, args, split="val", show_predictions=True, num_samples=3
 
 
 
-def train(args):
+def train(args, checkpoint_path=None):
     """Main training function"""
     # Set device
     device = torch.device(args.device)
@@ -2986,6 +2986,21 @@ def train(args):
             'loss': [],
             'accuracy': [],
             'iterations': []
+        },
+        'test_metrics': {
+            'loss': [],
+            'accuracy': [],
+            'iterations': []
+        },
+        'best_val': {
+            'loss': float('inf'),
+            'accuracy': 0.0,
+            'iteration': 0
+        },
+        'best_test': {
+            'loss': float('inf'),
+            'accuracy': 0.0,
+            'iteration': 0
         }
     }
     
@@ -3266,17 +3281,35 @@ def train(args):
                 # Validation (every 10% of iterations or every 10 iterations for short runs)
                 # eval_interval = max(1, min(10, args.max_iterations // 10))
                 # During training, don't show predictions to save space
-                val_metrics = evaluate(model, tok, args, split='val', show_predictions=True)
+                val_metrics = evaluate(model, tok, args, split='val', show_predictions=False)
+                test_metrics = evaluate(model, tok, args, split='test', show_predictions=False)
 
 
                 # val_metrics = evaluate(model_params, tok, args, split='val', show_predictions=True)
                 results['val_metrics']['loss'].append(val_metrics['loss'])
                 results['val_metrics']['accuracy'].append(val_metrics['accuracy'])
                 results['val_metrics']['iterations'].append(iteration + 1)
+                
+                results['test_metrics']['loss'].append(test_metrics['loss'])
+                results['test_metrics']['accuracy'].append(test_metrics['accuracy'])
+                results['test_metrics']['iterations'].append(iteration + 1)
+                
+                # Track best val and test metrics
+                if val_metrics['loss'] < results['best_val']['loss']:
+                    results['best_val']['loss'] = val_metrics['loss']
+                    results['best_val']['accuracy'] = val_metrics['accuracy']
+                    results['best_val']['iteration'] = iteration + 1
+                    
+                if test_metrics['loss'] < results['best_test']['loss']:
+                    results['best_test']['loss'] = test_metrics['loss']
+                    results['best_test']['accuracy'] = test_metrics['accuracy']
+                    results['best_test']['iteration'] = iteration + 1
 
-            print(f"Validation at iter {iteration+1}: "
-                  f"Loss: {val_metrics['loss']:.4f} | "
-                  f"Accuracy: {val_metrics['accuracy']:.4f}")
+            print(f"Iter {iteration+1}: "
+                  f"Val Loss: {val_metrics['loss']:.4f} (best: {results['best_val']['loss']:.4f} @ iter {results['best_val']['iteration']}) | "
+                  f"Val Acc: {val_metrics['accuracy']:.4f} | "
+                  f"Test Loss: {test_metrics['loss']:.4f} (best: {results['best_test']['loss']:.4f} @ iter {results['best_test']['iteration']}) | "
+                  f"Test Acc: {test_metrics['accuracy']:.4f}")
 
             print(f"  Parameters: {param_count:,} ({param_memory_mb:.2f} MB)")
 
@@ -3293,8 +3326,51 @@ def train(args):
                     "grad_norm": step_metrics.get('grad_norm', [0])[-1] if step_metrics.get('grad_norm') else 0,
                     "val_loss": val_metrics['loss'],
                     "val_accuracy": val_metrics['accuracy'],
+                    "test_loss": test_metrics['loss'],
+                    "test_accuracy": test_metrics['accuracy'],
+                    "best_val_loss": results['best_val']['loss'],
+                    "best_val_iteration": results['best_val']['iteration'],
+                    "best_test_loss": results['best_test']['loss'],
+                    "best_test_iteration": results['best_test']['iteration'],
                 }
                 wandb.log(wandb_metrics, step=iteration + 1)
+            
+            # Save checkpoint every log_interval
+            if checkpoint_path is not None:
+                checkpoint_data = {
+                    "status": "running",
+                    "seed": int(args.seed),
+                    "current_iter": iteration + 1,
+                    "final_loss": float(step_metrics['train_loss'][-1]),
+                    "final_acc": float(train_accuracy),
+                    "wall_time_sec": float(total_elapsed),
+                    "wandb_run_name": args.wandb_run_name if hasattr(args, 'wandb_run_name') else "unknown",
+                    "val_metrics": {
+                        "loss": [float(x) for x in results["val_metrics"]["loss"]],
+                        "accuracy": [float(x) for x in results["val_metrics"]["accuracy"]],
+                        "iterations": [int(x) for x in results["val_metrics"]["iterations"]]
+                    },
+                    "test_metrics": {
+                        "loss": [float(x) for x in results["test_metrics"]["loss"]],
+                        "accuracy": [float(x) for x in results["test_metrics"]["accuracy"]],
+                        "iterations": [int(x) for x in results["test_metrics"]["iterations"]]
+                    },
+                    "best_val": {
+                        "loss": float(results["best_val"]["loss"]),
+                        "accuracy": float(results["best_val"]["accuracy"]),
+                        "iteration": int(results["best_val"]["iteration"])
+                    },
+                    "best_test": {
+                        "loss": float(results["best_test"]["loss"]),
+                        "accuracy": float(results["best_test"]["accuracy"]),
+                        "iteration": int(results["best_test"]["iteration"])
+                    },
+                    "args": {k: v for k, v in vars(args).items() if k not in ['coordinate_momentum', 'coordinate_variance', '_state']},
+                }
+                import json
+                with open(checkpoint_path, 'w') as f:
+                    json.dump(checkpoint_data, f, indent=2)
+                print(f"  [Checkpoint saved: {checkpoint_path}]")
 
 
 
@@ -3774,9 +3850,13 @@ def main() -> None:
     max_retries = args.oom_max_retries
     attempt = 0
 
+    # Create checkpoint path for intermediate saves
+    checkpoint_filename = f"checkpoint_{base_name}.json"
+    checkpoint_path = out_root / checkpoint_filename
+    
     while True:
         try:
-            results = train(args)
+            results = train(args, checkpoint_path=checkpoint_path)
 
             status = results["status"]
             iters  = int(results["train_metrics"]["iterations"][-1])
@@ -3800,11 +3880,33 @@ def main() -> None:
                                    .get("accuracy", [0.0])[-1]),
                 "wall_time_sec": float(results["train_metrics"]["time"][-1]),
                 "wandb_run_name": run_prefix,
+                "val_metrics": {
+                    "loss": [float(x) for x in results["val_metrics"]["loss"]],
+                    "accuracy": [float(x) for x in results["val_metrics"]["accuracy"]],
+                    "iterations": [int(x) for x in results["val_metrics"]["iterations"]]
+                },
+                "test_metrics": {
+                    "loss": [float(x) for x in results["test_metrics"]["loss"]],
+                    "accuracy": [float(x) for x in results["test_metrics"]["accuracy"]],
+                    "iterations": [int(x) for x in results["test_metrics"]["iterations"]]
+                },
+                "best_val": {
+                    "loss": float(results["best_val"]["loss"]),
+                    "accuracy": float(results["best_val"]["accuracy"]),
+                    "iteration": int(results["best_val"]["iteration"])
+                },
+                "best_test": {
+                    "loss": float(results["best_test"]["loss"]),
+                    "accuracy": float(results["best_test"]["accuracy"]),
+                    "iteration": int(results["best_test"]["iteration"])
+                },
                 "args": vars(args),
             }
             
             json.dump(payload, open(out_root / filename, "w"), indent=2)
             print(f"[INFO] Success → {filename} status {status} iters {iters}")
+            print(f"[INFO] Checkpoint file preserved: {checkpoint_filename}")
+            
             return
 
         except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
@@ -3823,11 +3925,18 @@ def main() -> None:
             torch.cuda.ipc_collect()
             time.sleep(backoff_sec)
 
+        except KeyboardInterrupt:
+            print("\n[INFO] Training interrupted by user (Ctrl+C)")
+            print(f"[INFO] Checkpoint file preserved: {checkpoint_filename}")
+            print(f"[INFO] This contains all metrics up to the last log_interval")
+            raise
+            
         except Exception as e:
             filename = f"{base_name}_fail.json"
             json.dump({"status": "fail", "error": str(e),
                        "args": vars(args)}, open(out_root / filename, "w"), indent=2)
             print(f"[ERROR] Exception → {filename}")
+            print(f"[INFO] Checkpoint file preserved: {checkpoint_filename}")
             raise
 
 

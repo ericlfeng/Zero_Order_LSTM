@@ -19,7 +19,7 @@ n_layers=3
 RUN_PREFIX="lstm${n_layers}L_ptb"
 
 ########## EARLY STOPPING CONFIGURATION #############
-ENABLE_EARLY_STOPPING=true
+ENABLE_EARLY_STOPPING=false
 CONVERGENCE_TRACKER_FILE="./convergence_tracker_${RUN_PREFIX}.json"
 
 # Reset convergence tracker at start (optional - comment out to resume)
@@ -43,7 +43,7 @@ input_dim=128
 
 # PTB typically uses longer sequences
 INPUT_SAMPLE_LENGTHS=(10)
-MICRO_BATCH_SIZES=(128)
+MICRO_BATCH_SIZES=(1024)
 MACRO_BATCH_SIZES=(1)
 
 # Learning rate sweep - PTB may need different LRs than copy task
