@@ -72,6 +72,7 @@ OVERFITS=(false)
 # Other configurations:
 LOG_INTERVAL=100
 MAX_ITERS=500000
+CHECKPOINT_INTERVAL=500  # Save resumable .pt checkpoint every N iterations (0 to disable)
 
 TIE_EPS_TO_LR=true
 ADAM=false
@@ -210,6 +211,7 @@ for TASK in "${TASKS[@]}"; do
                                                           --alpha_eye_scalar ${alpha_eye_scalar} \
                                                           --beta_eigen_sanger ${beta_eigen_sanger} \
                                                           --output_dir ./results_lstm${n_layers}layer_ptb \
+                                                          --checkpoint_interval ${CHECKPOINT_INTERVAL} \
                                                           ${EXTRA_FLAGS} \
                                                           ;
                                                     echo '[INFO] Finished run: $RUN_NAME_BASE';

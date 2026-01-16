@@ -2811,10 +2811,42 @@ def evaluate(model, tok, args, split="val", show_predictions=True, num_samples=3
 
 
 
-def train(args, checkpoint_path=None):
-    """Main training function"""
+def train(args, checkpoint_path=None, resume_checkpoint=None):
+    """Main training function
+    
+    Args:
+        args: Training arguments
+        checkpoint_path: Path to save JSON metrics checkpoint (legacy)
+        resume_checkpoint: Path to .pt checkpoint file to resume from
+    """
     # Set device
     device = torch.device(args.device)
+    
+    # Variables for resuming
+    start_iteration = 0
+    resumed_model_state = None
+    resumed_optimizer_state = None
+    resumed_results = None
+    resumed_rng_states = None
+    
+    # Load checkpoint if resuming
+    if resume_checkpoint is not None and os.path.exists(resume_checkpoint):
+        print(f"[RESUME] Loading checkpoint from {resume_checkpoint}")
+        ckpt = torch.load(resume_checkpoint, map_location=device, weights_only=False)
+        start_iteration = ckpt.get('iteration', 0)
+        resumed_model_state = ckpt.get('model_state_dict')
+        resumed_optimizer_state = ckpt.get('optimizer_state_dict')
+        resumed_results = ckpt.get('results')
+        resumed_rng_states = ckpt.get('rng_states')
+        
+        # Restore RNG states for reproducibility
+        if resumed_rng_states is not None:
+            torch.set_rng_state(resumed_rng_states['torch_rng'])
+            np.random.set_state(resumed_rng_states['numpy_rng'])
+            if torch.cuda.is_available() and 'cuda_rng' in resumed_rng_states:
+                torch.cuda.set_rng_state(resumed_rng_states['cuda_rng'])
+        
+        print(f"[RESUME] Resuming from iteration {start_iteration}")
 
     # Initialize wandb for experiment tracking (with defaults to avoid attribute errors)
     wandb_enabled = False
@@ -2955,6 +2987,11 @@ def train(args, checkpoint_path=None):
     else:
         raise ValueError(f"Unknown model_type {args.model_type}")
     
+    # Load model state if resuming
+    if resumed_model_state is not None:
+        model.load_state_dict(resumed_model_state)
+        print(f"[RESUME] Loaded model weights")
+    
     model_params = list(model.parameters())          # <- used by zeroth-order
     param_count  = sum(p.numel() for p in model_params)
     bytes_per_param = 4 if args.solver=="BPTT" else 2
@@ -2973,36 +3010,41 @@ def train(args, checkpoint_path=None):
         # bytes_per_param = 2  # bfloat16 = 2 bytes
         
     
-    # Set up results dictionary
-    results = {
-        'args': vars(args),
-        'train_metrics': {
-            'loss': [],
-            'accuracy': [],
-            'iterations': [],
-            'time': []
-        },
-        'val_metrics': {
-            'loss': [],
-            'accuracy': [],
-            'iterations': []
-        },
-        'test_metrics': {
-            'loss': [],
-            'accuracy': [],
-            'iterations': []
-        },
-        'best_val': {
-            'loss': float('inf'),
-            'accuracy': 0.0,
-            'iteration': 0
-        },
-        'best_test': {
-            'loss': float('inf'),
-            'accuracy': 0.0,
-            'iteration': 0
+    # Set up results dictionary (or restore from checkpoint)
+    if resumed_results is not None:
+        results = resumed_results
+        results['args'] = vars(args)  # Update args in case they changed
+        print(f"[RESUME] Restored metrics history")
+    else:
+        results = {
+            'args': vars(args),
+            'train_metrics': {
+                'loss': [],
+                'accuracy': [],
+                'iterations': [],
+                'time': []
+            },
+            'val_metrics': {
+                'loss': [],
+                'accuracy': [],
+                'iterations': []
+            },
+            'test_metrics': {
+                'loss': [],
+                'accuracy': [],
+                'iterations': []
+            },
+            'best_val': {
+                'loss': float('inf'),
+                'accuracy': 0.0,
+                'iteration': 0
+            },
+            'best_test': {
+                'loss': float('inf'),
+                'accuracy': 0.0,
+                'iteration': 0
+            }
         }
-    }
     
     # Main training loop
     print(f"Starting training for task: {args.task}")
@@ -3081,6 +3123,11 @@ def train(args, checkpoint_path=None):
     else:
         optimizer = None
 
+    # Load optimizer state if resuming
+    if resumed_optimizer_state is not None and optimizer is not None:
+        optimizer.load_state_dict(resumed_optimizer_state)
+        print(f"[RESUME] Loaded optimizer state")
+
     if args.hidden_size<4096:
         args.cache_gradients = True # THIS WILL COST US VRAM, but speed us up at the end, if we have the space we should use it.
     else:
@@ -3138,8 +3185,8 @@ def train(args, checkpoint_path=None):
     elif getattr(args, 'enable_early_stopping', False) and not CONVERGENCE_TRACKER_AVAILABLE:
         print("[WARNING] Early stopping requested but convergence_tracker module not available")
 
-    total_iterations = 0
-    for iteration in range(args.max_iterations):
+    total_iterations = start_iteration
+    for iteration in range(start_iteration, args.max_iterations):
         # Get batch based on task (or reuse same batch if overfitting)
         start_time = time.time()
         if not has_overfit_flag:
@@ -3371,7 +3418,36 @@ def train(args, checkpoint_path=None):
                 with open(checkpoint_path, 'w') as f:
                     json.dump(checkpoint_data, f, indent=2)
                 print(f"  [Checkpoint saved: {checkpoint_path}]")
-
+            
+            # Save resumable .pt checkpoint every checkpoint_interval iterations
+            checkpoint_interval = getattr(args, 'checkpoint_interval', 1000)
+            if checkpoint_interval > 0 and (iteration + 1) % checkpoint_interval == 0:
+                # Build checkpoint path from output_dir and run name
+                ckpt_dir = Path(args.output_dir).expanduser()
+                ckpt_dir.mkdir(parents=True, exist_ok=True)
+                run_name = args.wandb_run_name if hasattr(args, 'wandb_run_name') and args.wandb_run_name else "run"
+                pt_checkpoint_path = ckpt_dir / f"checkpoint_{run_name}.pt"
+                
+                # Collect RNG states for reproducibility
+                rng_states = {
+                    'torch_rng': torch.get_rng_state(),
+                    'numpy_rng': np.random.get_state(),
+                }
+                if torch.cuda.is_available():
+                    rng_states['cuda_rng'] = torch.cuda.get_rng_state()
+                
+                # Build checkpoint dict
+                pt_checkpoint = {
+                    'iteration': iteration + 1,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict() if optimizer is not None else None,
+                    'results': results,
+                    'rng_states': rng_states,
+                    'args': {k: v for k, v in vars(args).items() if k not in ['coordinate_momentum', 'coordinate_variance', '_state']},
+                }
+                
+                torch.save(pt_checkpoint, pt_checkpoint_path)
+                print(f"  [Resumable checkpoint saved: {pt_checkpoint_path}]")
 
 
     # final cleanup after training
@@ -3766,6 +3842,10 @@ def get_argument_parser():
     # Experiment tracking
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--save_model", action="store_true")
+    parser.add_argument("--checkpoint_interval", type=int, default=1000,
+                        help="Save resumable checkpoint every N iterations (0 to disable)")
+    parser.add_argument("--resume_from", type=str, default=None,
+                        help="Path to checkpoint .pt file to resume training from")
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb_proj", type=str, default="neural-functions")
     parser.add_argument("--wandb_run_name", type=str, default=None)
@@ -3828,6 +3908,27 @@ def main() -> None:
     """Train with OOM-retry loop and write results + full args to JSON."""
     args = get_argument_parser()
 
+    # If resuming, load args from checkpoint (but allow command-line overrides for device)
+    if args.resume_from is not None and os.path.exists(args.resume_from):
+        print(f"[INFO] Loading args from checkpoint: {args.resume_from}")
+        ckpt = torch.load(args.resume_from, map_location='cpu', weights_only=False)
+        saved_args = ckpt.get('args', {})
+        
+        # Save command-line overrides (device is the main one we want to override)
+        cli_device = args.device
+        cli_resume_from = args.resume_from
+        
+        # Update args with saved values
+        for key, value in saved_args.items():
+            if hasattr(args, key):
+                setattr(args, key, value)
+        
+        # Restore command-line overrides
+        args.device = cli_device
+        args.resume_from = cli_resume_from
+        
+        print(f"[INFO] Restored args from checkpoint (using device: {args.device})")
+
     # seed --------------------------------------------------------------
     if args.seed == -1:
         args.seed = np.random.randint(1, 1001)
@@ -3854,9 +3955,14 @@ def main() -> None:
     checkpoint_filename = f"checkpoint_{base_name}.json"
     checkpoint_path = out_root / checkpoint_filename
     
+    # Determine resume checkpoint path
+    resume_checkpoint = getattr(args, 'resume_from', None)
+    if resume_checkpoint:
+        print(f"[INFO] Will resume from checkpoint: {resume_checkpoint}")
+    
     while True:
         try:
-            results = train(args, checkpoint_path=checkpoint_path)
+            results = train(args, checkpoint_path=checkpoint_path, resume_checkpoint=resume_checkpoint)
 
             status = results["status"]
             iters  = int(results["train_metrics"]["iterations"][-1])
