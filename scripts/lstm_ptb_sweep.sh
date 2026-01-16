@@ -47,7 +47,7 @@ MICRO_BATCH_SIZES=(1024)
 MACRO_BATCH_SIZES=(1)
 
 # Learning rate sweep - PTB may need different LRs than copy task
-LEARNING_RATES=(0.1 0.05 0.01 0.005 0.001)
+LEARNING_RATES=(0.1 0.01 0.001 0.0001)
 EPSILONS=(0.1)
 
 MAX_NUMS=(120)
