@@ -77,6 +77,12 @@ def log(msg):
     """Simple logging helper"""
     print(msg)
 
+def safe_float(x):
+    """Convert to float, replacing inf/nan with None for JSON compatibility."""
+    f = float(x)
+    if math.isinf(f) or math.isnan(f):
+        return None
+    return f
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Binary LR Search Functions
@@ -3403,13 +3409,13 @@ def train(args, checkpoint_path=None, resume_checkpoint=None):
                         "iterations": [int(x) for x in results["test_metrics"]["iterations"]]
                     },
                     "best_val": {
-                        "loss": float(results["best_val"]["loss"]),
-                        "accuracy": float(results["best_val"]["accuracy"]),
+                        "loss": safe_float(results["best_val"]["loss"]),
+                        "accuracy": safe_float(results["best_val"]["accuracy"]),
                         "iteration": int(results["best_val"]["iteration"])
                     },
                     "best_test": {
-                        "loss": float(results["best_test"]["loss"]),
-                        "accuracy": float(results["best_test"]["accuracy"]),
+                        "loss": safe_float(results["best_test"]["loss"]),
+                        "accuracy": safe_float(results["best_test"]["accuracy"]),
                         "iteration": int(results["best_test"]["iteration"])
                     },
                     "args": {k: v for k, v in vars(args).items() if k not in ['coordinate_momentum', 'coordinate_variance', '_state']},
@@ -3997,13 +4003,13 @@ def main() -> None:
                     "iterations": [int(x) for x in results["test_metrics"]["iterations"]]
                 },
                 "best_val": {
-                    "loss": float(results["best_val"]["loss"]),
-                    "accuracy": float(results["best_val"]["accuracy"]),
+                    "loss": safe_float(results["best_val"]["loss"]),
+                    "accuracy": safe_float(results["best_val"]["accuracy"]),
                     "iteration": int(results["best_val"]["iteration"])
                 },
                 "best_test": {
-                    "loss": float(results["best_test"]["loss"]),
-                    "accuracy": float(results["best_test"]["accuracy"]),
+                    "loss": safe_float(results["best_test"]["loss"]),
+                    "accuracy": safe_float(results["best_test"]["accuracy"]),
                     "iteration": int(results["best_test"]["iteration"])
                 },
                 "args": vars(args),
