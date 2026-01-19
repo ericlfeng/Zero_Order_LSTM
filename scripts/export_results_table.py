@@ -10,10 +10,22 @@ Usage:
 import argparse
 import json
 import math
+import re
 from pathlib import Path
 from collections import defaultdict
 from typing import Dict, List
 import sys
+
+
+def load_json_with_infinity(filepath: str) -> Dict:
+    """Load JSON file, handling invalid Infinity/NaN values."""
+    with open(filepath, 'r') as f:
+        content = f.read()
+    # Replace JavaScript-style Infinity/NaN with valid JSON
+    content = re.sub(r'\bInfinity\b', 'null', content)
+    content = re.sub(r'\b-Infinity\b', 'null', content)
+    content = re.sub(r'\bNaN\b', 'null', content)
+    return json.loads(content)
 
 
 def calculate_lstm_params(hidden_size: int, input_size: int, n_layers: int) -> int:
@@ -39,8 +51,7 @@ def load_results(results_dir: str) -> List[Dict]:
     
     for json_file in json_files:
         try:
-            with open(json_file, 'r') as f:
-                data = json.load(f)
+            data = load_json_with_infinity(json_file)
             
             args = data.get('args', {})
             if not args:
@@ -48,6 +59,11 @@ def load_results(results_dir: str) -> List[Dict]:
             
             hidden_size = args.get('hidden_size', 111)
             model_scale = hidden_size // 111 if hidden_size else 1
+            
+            # Handle None values from sanitized infinities
+            final_loss = data.get('final_loss')
+            if final_loss is None:
+                final_loss = float('inf')
             
             result = {
                 'model_scale': model_scale,
@@ -58,8 +74,8 @@ def load_results(results_dir: str) -> List[Dict]:
                 'learning_rate': args.get('learning_rate', 0.0),
                 'n_layers': args.get('n_layers', 3),
                 'input_size': args.get('input_size', 128),
-                'final_loss': data.get('final_loss', float('inf')),
-                'final_acc': data.get('final_acc', 0.0),
+                'final_loss': final_loss,
+                'final_acc': data.get('final_acc', 0.0) or 0.0,
                 'status': data.get('status', 'unknown'),
                 'iters': data.get('iters', 0),
             }
