@@ -7,12 +7,6 @@
 # stop if they exceed the convergence iteration count.
 ##############################################################################
 
-# 1) Kill existing screen sessions
-echo "[INFO] Killing existing screen sessions named '*'..."
-screen -ls | grep '\.' | awk '{print $1}' | xargs -I{} screen -S {} -X quit 2>/dev/null
-
-echo "[INFO] Starting runs..."
-
 
 ########## CONFIGURE N_LAYERS HERE #############
 n_layers=3
