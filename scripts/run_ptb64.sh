@@ -1,9 +1,6 @@
 #!/bin/bash
 # Targeted PTB 64-scale runs across 8 GPU node (skip GPU 5)
 
-echo "Killing all existing screen sessions..."
-screen -ls | grep '\.' | awk '{print $1}' | xargs -I{} screen -S {} -X quit 2>/dev/null
-echo "Done cleaning up screen sessions."
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
