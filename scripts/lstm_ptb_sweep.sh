@@ -28,7 +28,7 @@ fi
 TASKS=("penn_tree_bank")
 ARCHITECTURES=("LSTM")
 
-MODEL_SCALES=(1 2 4 8)
+MODEL_SCALES=(16)
 # base hidden=111 so scale 64 -> ~1B params
 hidden_size=111
 memory_size=111
@@ -42,7 +42,7 @@ MICRO_BATCH_SIZES=(1024)
 MACRO_BATCH_SIZES=(1)
 
 # Learning rate sweep - PTB may need different LRs than copy task
-LEARNING_RATES=(0.1 0.01 0.001 0.0001)
+LEARNING_RATES=(0.01 0.001)
 EPSILONS=(0.1)
 
 MAX_NUMS=(120)
