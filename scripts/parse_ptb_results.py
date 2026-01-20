@@ -25,14 +25,23 @@ def parse_json_file(filepath):
         
         args = data.get('args', {})
         best_test = data.get('best_test', {})
+        filename = os.path.basename(filepath)
         
         # Extract solver name and normalize it
         solver = args.get('solver', 'unknown')
         
         # Extract other fields
         num_pert = args.get('num_perturbations', 0)
-        model_scale = args.get('model_scale', 'unknown')
         learning_rate = args.get('learning_rate', None)
+        
+        # Extract model_scale - prefer filename pattern over args since args may be wrong
+        # Look for pattern like _s1_, _s4_, _s16_ in filename
+        import re
+        scale_match = re.search(r'_s(\d+)_', filename)
+        if scale_match:
+            model_scale = int(scale_match.group(1))
+        else:
+            model_scale = args.get('model_scale', 'unknown')
         
         # Best test results
         best_acc = best_test.get('accuracy', None)
