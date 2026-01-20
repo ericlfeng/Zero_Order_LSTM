@@ -27,13 +27,6 @@ def parse_json_file(filepath):
         best_test = data.get('best_test', {})
         filename = os.path.basename(filepath)
         
-        # Extract solver name and normalize it
-        solver = args.get('solver', 'unknown')
-        
-        # Extract other fields
-        num_pert = args.get('num_perturbations', 0)
-        learning_rate = args.get('learning_rate', None)
-        
         # Extract model_scale - prefer filename pattern over args since args may be wrong
         # Look for pattern like _s1_, _s4_, _s16_ in filename
         import re
@@ -42,6 +35,25 @@ def parse_json_file(filepath):
             model_scale = int(scale_match.group(1))
         else:
             model_scale = args.get('model_scale', 'unknown')
+        
+        # Extract solver from filename - look for patterns like _1SPSA_, _1.5-SPSA_, _1_5-SPSA_
+        # The filename may use underscore instead of dot (1_5-SPSA instead of 1.5-SPSA)
+        solver_match = re.search(r'_(1(?:[._]5)?-?SPSA)_', filename, re.IGNORECASE)
+        if solver_match:
+            solver = solver_match.group(1)
+            # Normalize: convert 1_5-SPSA to 1.5-SPSA
+            solver = solver.replace('_', '.')
+        else:
+            solver = args.get('solver', 'unknown')
+        
+        # Extract num_perturbations from filename as well - look for _pert8_, _pert96_, etc.
+        pert_match = re.search(r'_pert(\d+)_', filename)
+        if pert_match:
+            num_pert = int(pert_match.group(1))
+        else:
+            num_pert = args.get('num_perturbations', 0)
+        
+        learning_rate = args.get('learning_rate', None)
         
         # Best test results
         best_acc = best_test.get('accuracy', None)
