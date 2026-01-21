@@ -16,7 +16,7 @@ RUN_PREFIX="lstm${n_layers}L_overfit_bptt"
 TASKS=("copy")
 ARCHITECTURES=("LSTM")
 
-MODEL_SCALES=(1 2 4 8 16 32 64)
+MODEL_SCALES=(32 64)
 # base hidden=111 so scale 64 -> ~1B params
 hidden_size=111
 memory_size=111
@@ -28,7 +28,7 @@ INPUT_SAMPLE_LENGTHS=(10)
 MICRO_BATCH_SIZES=(1)
 MACRO_BATCH_SIZES=(1)
 
-LEARNING_RATES=(0.0.001 0.0001)
+LEARNING_RATES=(0.001 0.0001)
 WEIGHT_DECAYS=(0)
 GRAD_CLIPS=(0)
 
@@ -85,7 +85,12 @@ for TASK in "${TASKS[@]}"; do
                                               this_input_size=${input_dim}
                                               
                                               # Define RUN_NAME_BASE
-                                              RUN_NAME_BASE="${RUN_PREFIX}_${run_counter}_s${MODEL_SCALE}_lr${LR}_gc${GRAD_CLIP}"
+                                              if [ "$USE_ADAM" = true ]; then
+                                                OPT_NAME="adam"
+                                              else
+                                                OPT_NAME="sgd"
+                                              fi
+                                              RUN_NAME_BASE="${RUN_PREFIX}_${run_counter}_s${MODEL_SCALE}_lr${LR}_${OPT_NAME}"
 
                                               EXTRA_FLAGS=""
                                               
