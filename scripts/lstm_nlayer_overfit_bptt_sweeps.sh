@@ -16,7 +16,7 @@ RUN_PREFIX="lstm${n_layers}L_overfit_bptt"
 TASKS=("copy")
 ARCHITECTURES=("LSTM")
 
-MODEL_SCALES=(32 64)
+MODEL_SCALES=(1 2 4 8 16 32 64)
 # base hidden=111 so scale 64 -> ~1B params
 hidden_size=111
 memory_size=111
