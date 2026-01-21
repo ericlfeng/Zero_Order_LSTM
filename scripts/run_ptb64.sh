@@ -5,7 +5,7 @@
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 # Base shared flags
-BASE_PARAMS="--task penn_tree_bank --model_type LSTM --n_layers 3 --micro_batch_size 128 --macro_batch_size 1 --seq_length 10 --max_iterations 500000 --distribution rad --tokenizer char_level --warmup_iters 1 --seed 42 --beta1 0. --beta2 0."
+BASE_PARAMS="--task penn_tree_bank --model_type LSTM --n_layers 3 --micro_batch_size 128 --macro_batch_size 8 --seq_length 10 --max_iterations 500000 --distribution rad --tokenizer char_level --warmup_iters 1 --seed 42 --beta1 0. --beta2 0."
 
 # Wandb settings
 WANDB_PARAMS="--wandb --wandb_proj LSTM_PTB_64_Targeted"
