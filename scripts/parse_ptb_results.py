@@ -55,9 +55,23 @@ def parse_json_file(filepath):
         
         learning_rate = args.get('learning_rate', None)
         
-        # Best test results
-        best_acc = best_test.get('accuracy', None)
-        best_iter = best_test.get('iteration', None)
+        # Best test results - extract best (lowest) LOSS from test_metrics array
+        test_metrics = data.get('test_metrics', {})
+        if 'loss' in test_metrics and 'iterations' in test_metrics:
+            loss_array = test_metrics['loss']
+            iter_array = test_metrics['iterations']
+            if loss_array and iter_array:
+                min_loss = min(loss_array)
+                best_idx = loss_array.index(min_loss)
+                best_loss = min_loss
+                best_iter = iter_array[best_idx]
+            else:
+                best_loss = best_test.get('loss', None)
+                best_iter = best_test.get('iteration', None)
+        else:
+            # Fallback to stored best_test if no test_metrics array
+            best_loss = best_test.get('loss', None)
+            best_iter = best_test.get('iteration', None)
         
         # Also get status for context
         status = data.get('status', 'unknown')
@@ -67,7 +81,7 @@ def parse_json_file(filepath):
             'num_perturbations': num_pert,
             'model_scale': model_scale,
             'learning_rate': learning_rate,
-            'best_accuracy': best_acc,
+            'best_loss': best_loss,
             'best_iteration': best_iter,
             'status': status,
             'filename': os.path.basename(filepath)
@@ -80,7 +94,7 @@ def parse_json_file(filepath):
 def select_best_lr(results):
     """
     For each combination of (solver, num_perturbations, model_scale),
-    select the result with the best accuracy across different learning rates.
+    select the result with the best (lowest) loss across different learning rates.
     """
     # Group by (solver, num_pert, scale)
     groups = defaultdict(list)
@@ -91,10 +105,10 @@ def select_best_lr(results):
     # Select best from each group
     best_results = []
     for key, group in groups.items():
-        # Filter out results with no accuracy
-        valid = [r for r in group if r['best_accuracy'] is not None]
+        # Filter out results with no loss
+        valid = [r for r in group if r['best_loss'] is not None]
         if valid:
-            best = max(valid, key=lambda x: x['best_accuracy'])
+            best = min(valid, key=lambda x: x['best_loss'])  # min for loss
         else:
             # If no valid results, just pick the first one
             best = group[0]
@@ -108,12 +122,11 @@ def format_solver_pert(solver, num_pert):
     return f"{solver} @ {num_pert}"
 
 
-def format_cell(accuracy, iteration, learning_rate=None, include_lr=False):
-    """Format accuracy and iteration for a table cell."""
-    if accuracy is None:
+def format_cell(loss, iteration, learning_rate=None, include_lr=False):
+    """Format loss and iteration for a table cell."""
+    if loss is None:
         return "—"
-    acc_pct = accuracy * 100
-    parts = [f"{acc_pct:.2f}%"]
+    parts = [f"{loss:.3f}"]
     
     if iteration is not None:
         # Use 'k' notation for thousands
@@ -134,7 +147,7 @@ def generate_wide_table(results, include_lr=False):
     Generate a wide-format table with:
     - Rows: solver + perturbations
     - Columns: model scale
-    - Cells: accuracy @ iteration (lr=X)
+    - Cells: loss @ iteration (lr=X)
     """
     # First select best LR for each combination
     best_results = select_best_lr(results)
@@ -149,7 +162,7 @@ def generate_wide_table(results, include_lr=False):
         scale = f"s{r['model_scale']}"
         all_scales.add(scale)
         
-        cell = format_cell(r['best_accuracy'], r['best_iteration'], 
+        cell = format_cell(r['best_loss'], r['best_iteration'], 
                           r['learning_rate'], include_lr)
         data[key][scale] = cell
         raw_data[key][scale] = r  # Store full result for CSV
@@ -194,12 +207,12 @@ def print_markdown_table(solvers, scales, data):
 
 
 def save_wide_csv(solvers, scales, raw_data, filepath, delimiter=','):
-    """Save wide-format results to CSV/TSV with separate columns for acc, iter, lr."""
+    """Save wide-format results to CSV/TSV with separate columns for loss, iter, lr."""
     with open(filepath, 'w') as f:
         # Header
         headers = ['Solver']
         for scale in scales:
-            headers.extend([f'{scale}_accuracy', f'{scale}_iteration', f'{scale}_lr'])
+            headers.extend([f'{scale}_loss', f'{scale}_iteration', f'{scale}_lr'])
         f.write(delimiter.join(headers) + '\n')
         
         # Data rows
@@ -208,7 +221,7 @@ def save_wide_csv(solvers, scales, raw_data, filepath, delimiter=','):
             for scale in scales:
                 r = raw_data[solver].get(scale)
                 if r:
-                    row.append(str(r['best_accuracy']) if r['best_accuracy'] else '')
+                    row.append(str(r['best_loss']) if r['best_loss'] else '')
                     row.append(str(r['best_iteration']) if r['best_iteration'] else '')
                     row.append(str(r['learning_rate']) if r['learning_rate'] else '')
                 else:
@@ -256,7 +269,7 @@ def print_long_table(results):
     """Print a long-format table with one row per experiment (best LR selected)."""
     best_results = select_best_lr(results)
     
-    print(f"{'Solver':<12} {'Pert':>4} {'Scale':>5} {'Best Acc':>10} {'Best Iter':>10} {'LR':>8} {'Status':<10}")
+    print(f"{'Solver':<12} {'Pert':>4} {'Scale':>5} {'Best Loss':>10} {'Best Iter':>10} {'LR':>8} {'Status':<10}")
     print("-" * 70)
     
     # Sort results
@@ -267,10 +280,10 @@ def print_long_table(results):
     ))
     
     for r in sorted_results:
-        acc = f"{r['best_accuracy']*100:.2f}%" if r['best_accuracy'] else "—"
+        loss = f"{r['best_loss']:.4f}" if r['best_loss'] else "—"
         iter_val = str(r['best_iteration']) if r['best_iteration'] else "—"
         lr_val = str(r['learning_rate']) if r['learning_rate'] else "—"
-        print(f"{r['solver']:<12} {r['num_perturbations']:>4} {r['model_scale']:>5} {acc:>10} {iter_val:>10} {lr_val:>8} {r['status']:<10}")
+        print(f"{r['solver']:<12} {r['num_perturbations']:>4} {r['model_scale']:>5} {loss:>10} {iter_val:>10} {lr_val:>8} {r['status']:<10}")
 
 
 def save_long_csv(results, filepath, delimiter=','):
@@ -278,7 +291,7 @@ def save_long_csv(results, filepath, delimiter=','):
     with open(filepath, 'w') as f:
         headers = [
             'Solver', 'Num_Perturbations', 'Model_Scale', 
-            'Learning_Rate', 'Best_Accuracy', 'Best_Iteration', 
+            'Learning_Rate', 'Best_Loss', 'Best_Iteration', 
             'Status', 'Filename'
         ]
         f.write(delimiter.join(headers) + '\n')
@@ -289,7 +302,7 @@ def save_long_csv(results, filepath, delimiter=','):
                 str(r['num_perturbations']),
                 str(r['model_scale']),
                 str(r['learning_rate']) if r['learning_rate'] else '',
-                str(r['best_accuracy']) if r['best_accuracy'] else '',
+                str(r['best_loss']) if r['best_loss'] else '',
                 str(r['best_iteration']) if r['best_iteration'] else '',
                 r['status'],
                 r['filename']
@@ -297,6 +310,96 @@ def save_long_csv(results, filepath, delimiter=','):
             f.write(delimiter.join(row) + '\n')
     
     print(f"Saved to: {filepath}")
+
+
+def check_for_suspicious_patterns(results):
+    """Check for suspicious patterns that might indicate bugs."""
+    warnings = []
+    
+    # Group by (scale, num_pert) to compare across solvers
+    from collections import defaultdict
+    by_config = defaultdict(list)
+    for r in results:
+        key = (r['model_scale'], r['num_perturbations'])
+        by_config[key].append(r)
+    
+    # Check for identical losses across different solvers
+    for config, runs in by_config.items():
+        if len(runs) < 2:
+            continue
+        
+        # Group by solver
+        by_solver = defaultdict(list)
+        for r in runs:
+            by_solver[r['solver']].append(r)
+        
+        if len(by_solver) < 2:
+            continue
+        
+        # Compare best losses across solvers
+        solver_losses = {}
+        for solver, solver_runs in by_solver.items():
+            valid = [r for r in solver_runs if r['best_loss'] is not None]
+            if valid:
+                best = min(valid, key=lambda x: x['best_loss'])
+                solver_losses[solver] = (best['best_loss'], best['best_iteration'])
+        
+        # Check if any two solvers have identical (loss, iter) pairs
+        items = list(solver_losses.items())
+        for i in range(len(items)):
+            for j in range(i+1, len(items)):
+                s1, (l1, i1) = items[i]
+                s2, (l2, i2) = items[j]
+                if l1 is not None and l2 is not None:
+                    if abs(l1 - l2) < 1e-9 and i1 == i2:
+                        warnings.append(
+                            f"WARNING: {s1} and {s2} have identical best loss "
+                            f"({l1:.6f} @ iter {i1}) for scale={config[0]}, pert={config[1]}"
+                        )
+    
+    return warnings
+
+
+def analyze_accuracy_loss_correlation(results):
+    """Analyze if accuracy plateaus while loss decreases."""
+    analysis = []
+    
+    for r in results:
+        if 'test_metrics_full' not in r:
+            continue
+        
+        tm = r['test_metrics_full']
+        if 'accuracy' not in tm or 'loss' not in tm:
+            continue
+        
+        acc = tm['accuracy']
+        loss = tm['loss']
+        
+        if len(acc) < 10:
+            continue
+        
+        # Check last 50% of training
+        mid = len(acc) // 2
+        early_acc = sum(acc[:mid]) / mid
+        late_acc = sum(acc[mid:]) / (len(acc) - mid)
+        early_loss = sum(loss[:mid]) / mid
+        late_loss = sum(loss[mid:]) / (len(loss) - mid)
+        
+        acc_change = late_acc - early_acc
+        loss_change = late_loss - early_loss
+        
+        # Flag if loss decreased significantly but accuracy didn't improve much
+        if loss_change < -0.1 and abs(acc_change) < 0.01:
+            analysis.append({
+                'file': r['filename'],
+                'solver': r['solver'],
+                'scale': r['model_scale'],
+                'loss_change': loss_change,
+                'acc_change': acc_change,
+                'note': 'Loss decreased but accuracy plateaued'
+            })
+    
+    return analysis
 
 
 def main():
@@ -333,6 +436,11 @@ def main():
         action='store_true',
         help='For CSV output, include all LRs instead of just the best'
     )
+    parser.add_argument(
+        '--diagnose',
+        action='store_true',
+        help='Run diagnostics to check for suspicious patterns'
+    )
     
     args = parser.parse_args()
     
@@ -360,6 +468,22 @@ def main():
     if not results:
         print("No valid results found", file=sys.stderr)
         sys.exit(1)
+    
+    # Run diagnostics if requested
+    if args.diagnose:
+        print("=" * 60)
+        print("DIAGNOSTICS")
+        print("=" * 60)
+        
+        warnings = check_for_suspicious_patterns(results)
+        if warnings:
+            print("\nSuspicious patterns found:")
+            for w in warnings:
+                print(f"  {w}")
+        else:
+            print("\nNo suspicious patterns detected.")
+        
+        print("\n" + "=" * 60 + "\n")
     
     # Determine delimiter for output file
     if args.output:
